@@ -26,6 +26,7 @@ model User {
   googleDriveOAuthStates GoogleDriveOAuthState[]
   hostingConnections    HostingConnection[]  @relation("HostingConnectionOwner")
   hostingCredentials    HostingCredential[]  @relation("HostingCredentialOwner")
+  mcpAccessTokens       McpAccessToken[]
 }
 
 model Organization {
@@ -615,4 +616,21 @@ model AgentRequestNonce {
 
   @@id([agentId, nonce])
   @@index([createdAt])
+}
+
+// Personal access tokens that let a Claude MCP client act as this user through
+// /api/mcp. Only a SHA-256 hash of the secret is stored; the secret is shown once.
+model McpAccessToken {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  tokenHash  String    @unique
+  prefix     String
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, createdAt])
 }

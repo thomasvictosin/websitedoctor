@@ -24,6 +24,10 @@ For managed PostgreSQL/Supabase setup, see [`docs/supabase-setup.md`](./docs/sup
 
 Run Next.js commands through the repository-root npm scripts above; they target `apps/web`. Avoid running `next` or `npx next` from the repository root, which can create a separate root `.next` directory. If one appears, remove it with `npm run clean:root-next`; this does not remove the app's active `apps/web/.next` build.
 
+### Claude MCP access
+
+Claude Code and Claude Desktop can diagnose and repair sites through the app's remote MCP server at `/api/mcp`, using a personal token created under **Team → Claude MCP access**. Claude reaches the WordPress plugin only through the central app's existing approval and signed-poll workflow. See [`docs/claude-mcp.md`](./docs/claude-mcp.md).
+
 ### Optional Google Drive repair snapshots
 
 For each organization, an owner or administrator can connect a dedicated Google account from a website's **Backups** tab. Enable the Google Drive API, create a Google OAuth web client, and configure `GOOGLE_DRIVE_CLIENT_ID` and `GOOGLE_DRIVE_CLIENT_SECRET` in `apps/web/.env`. Add `${APP_ORIGIN}/api/integrations/google-drive/callback` as an authorized redirect URI in Google Cloud; `APP_ORIGIN` must be the exact app origin and use HTTPS in production. Keep `SESSION_SECRET` private and at least 32 bytes: it encrypts both the stored Drive refresh token and repair snapshot content.

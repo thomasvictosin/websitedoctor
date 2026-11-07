@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
 import { getSessionUserId, isSameOrigin } from "./auth";
 import { enforceRateLimit } from "./rate-limit";
+import { currentPrincipal } from "./request-principal";
 
 export async function authorizeRequest(request?: Request, requireSameOrigin = false) {
+  // A token-verified principal (set only by /api/mcp) replaces the session
+  // cookie. Bearer tokens are never attached by browsers automatically, so the
+  // same-origin CSRF check that protects cookie sessions does not apply.
+  const principal = currentPrincipal();
+  if (principal) return principal.userId;
   const ownerId = await getSessionUserId();
   if (!ownerId) {
     return NextResponse.json({ error: "Authentication required." }, { status: 401 });

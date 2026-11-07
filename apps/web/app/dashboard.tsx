@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { HostingManager } from "./hosting-manager";
 import { BackupsManager } from "./backups-manager";
+import { McpAccessManager } from "./mcp-access-manager";
 import { parseAssistantRepairPermissionCommand } from "@/lib/repair-assistant-intent";
 
 type Check = {
@@ -1500,6 +1501,8 @@ export default function Home() {
         </article>)}</div>
         <small className="diagnostic-limit">Self-service invitations, password reset, and membership across multiple organizations are not configured.</small>
       </section>}
+
+      {activeView === "team" && <McpAccessManager onNotice={setMessage} />}
 
       {activeView === "dashboard" && <section className="system-settings">
         <div><span className="eyebrow">SYSTEM SETTINGS</span><strong>Organization accounts</strong><small>Database-backed sessions and membership-based access</small></div>
