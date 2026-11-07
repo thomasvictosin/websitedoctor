@@ -51,34 +51,46 @@ type Website = {
   };
 };
 
+// Issue.diagnosis.diagnosis holds either an AI diagnosis (lib/ai/engine.ts) or
+// a deterministic one (deterministicIssueDiagnosis in lib/repair-policy.ts,
+// stored by "Diagnose Without AI" and when AI is unavailable). Deterministic
+// diagnoses have no evidence-reference arrays and a null confidence, so those
+// fields are optional here and must be read defensively when rendering.
 type StructuredDiagnosis = {
+  kind?: "deterministic";
   issueTitle: string;
-  issueTitleEvidenceRefs: string[];
+  issueTitleEvidenceRefs?: string[];
   category: string;
   description: string;
-  descriptionEvidenceRefs: string[];
+  descriptionEvidenceRefs?: string[];
   affectedWebsite: string;
   affectedPage: string | null;
   affectedComponent: string | null;
   severity: string;
-  confidence: number;
-  facts: Array<{ claim: string; evidenceRefs: string[] }>;
-  hypotheses: Array<{ claim: string; evidenceRefs: string[] }>;
-  probableRootCause: {
+  confidence: number | null;
+  facts?: Array<{ claim: string; evidenceRefs?: string[]; basis?: string }>;
+  hypotheses?: Array<{ claim: string; evidenceRefs?: string[] }>;
+  probableRootCause?: {
     claim: string;
     status: "hypothesis" | "insufficient_evidence";
-    evidenceRefs: string[];
+    evidenceRefs?: string[];
   };
-  alternativeExplanations: Array<{ explanation: string; evidenceRefs: string[] }>;
-  recommendedFix: {
+  alternativeExplanations?: Array<{ explanation: string; evidenceRefs?: string[] }>;
+  recommendedFix?: {
     description: string;
-    evidenceRefs: string[];
+    evidenceRefs?: string[];
     risk: string;
     approvalRequired: true;
-    verificationProcedure: string[];
+    verificationProcedure?: string[];
   };
-  evidenceReferences: Array<{ id: string; path: string; value: unknown }>;
+  evidenceReferences?: Array<{ id: string; path: string; value: unknown }>;
 };
+
+function diagnosisConfidenceLabel(confidence: number | null | undefined) {
+  return typeof confidence === "number" && Number.isFinite(confidence)
+    ? `${Math.round(confidence * 100)}% confidence`
+    : "deterministic rules, no AI confidence score";
+}
 
 type Issue = {
   id: string;
@@ -216,8 +228,15 @@ export default function Home() {
       fetch("/api/settings"),
       fetch("/api/members"),
     ]);
-    if (!sitesResponse.ok || !issuesResponse.ok || !settingsResponse.ok || !membersResponse.ok) {
-      throw new Error("Could not load dashboard data.");
+    const failedResponse = ([
+      ["/api/sites", sitesResponse],
+      ["/api/issues", issuesResponse],
+      ["/api/settings", settingsResponse],
+      ["/api/members", membersResponse],
+    ] as const).find(([, response]) => !response.ok);
+    if (failedResponse) {
+      const [endpoint, response] = failedResponse;
+      throw new Error(`Could not load dashboard data: ${endpoint} returned HTTP ${response.status}.`);
     }
     const [sites, currentIssues, currentSettings, memberData] = await Promise.all([
       sitesResponse.json() as Promise<Website[]>,
@@ -433,7 +452,12 @@ export default function Home() {
       setEnvironmentType("production");
       setRelatedWebsiteId("");
       setMonitoringEnabled(false);
-      await refresh();
+      try {
+        await refresh();
+      } catch {
+        setMessage("Website was added, but the dashboard could not refresh. Check that the database is running, then refresh the page. Do not submit the form again.");
+        return;
+      }
       setMessage("Website added. Run a check to see its current status.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not add website. Check the server and database connection, then try again.");
@@ -1227,7 +1251,7 @@ export default function Home() {
                 )}
                 {issue.diagnosis?.diagnosis && (
                   <div className="issue-ai-diagnosis">
-                    <strong>Central diagnosis · {issue.diagnosis.diagnosis.severity} · {Math.round(issue.diagnosis.diagnosis.confidence * 100)}% confidence</strong>
+                    <strong>Central diagnosis · {issue.diagnosis.diagnosis.severity} · {diagnosisConfidenceLabel(issue.diagnosis.diagnosis.confidence)}</strong>
                     <DiagnosisDetails diagnosis={issue.diagnosis.diagnosis} />
                   </div>
                 )}
@@ -1496,7 +1520,13 @@ export default function Home() {
 function DiagnosisDetails({ diagnosis }: { diagnosis: StructuredDiagnosis }) {
   const formatValue = (value: unknown) =>
     typeof value === "string" ? value : JSON.stringify(value);
-  const references = (ids: string[]) => ids.length > 0 ? ` [${ids.join(", ")}]` : "";
+  const references = (ids: string[] | undefined) => Array.isArray(ids) && ids.length > 0 ? ` [${ids.join(", ")}]` : "";
+  const facts = Array.isArray(diagnosis.facts) ? diagnosis.facts : [];
+  const hypotheses = Array.isArray(diagnosis.hypotheses) ? diagnosis.hypotheses : [];
+  const alternativeExplanations = Array.isArray(diagnosis.alternativeExplanations) ? diagnosis.alternativeExplanations : [];
+  const verificationProcedure = Array.isArray(diagnosis.recommendedFix?.verificationProcedure) ? diagnosis.recommendedFix.verificationProcedure : [];
+  const evidenceReferences = Array.isArray(diagnosis.evidenceReferences) ? diagnosis.evidenceReferences : [];
+  const rootCause = diagnosis.probableRootCause;
 
   return (
     <div className="structured-diagnosis">
@@ -1508,28 +1538,30 @@ function DiagnosisDetails({ diagnosis }: { diagnosis: StructuredDiagnosis }) {
         {diagnosis.affectedComponent ? ` · Component: ${diagnosis.affectedComponent}` : ""}
       </small>
       <h4>Observed facts</h4>
-      <ul>{diagnosis.facts.map((fact, index) => <li key={index}>{fact.claim}{references(fact.evidenceRefs)}</li>)}</ul>
+      <ul>{facts.map((fact, index) => <li key={index}>{fact.claim}{references(fact.evidenceRefs)}</li>)}</ul>
       <h4>Hypotheses</h4>
-      <p>{diagnosis.probableRootCause.status === "insufficient_evidence" ? "Insufficient evidence to identify a probable cause." : diagnosis.probableRootCause.claim}{references(diagnosis.probableRootCause.evidenceRefs)}</p>
-      {diagnosis.hypotheses.length > 0 && (
-        <ul>{diagnosis.hypotheses.map((item, index) => <li key={index}>{item.claim}{references(item.evidenceRefs)}</li>)}</ul>
+      <p>{!rootCause || rootCause.status === "insufficient_evidence" ? "Insufficient evidence to identify a probable cause." : rootCause.claim}{references(rootCause?.evidenceRefs)}</p>
+      {hypotheses.length > 0 && (
+        <ul>{hypotheses.map((item, index) => <li key={index}>{item.claim}{references(item.evidenceRefs)}</li>)}</ul>
       )}
-      {diagnosis.alternativeExplanations.length > 0 && (
+      {alternativeExplanations.length > 0 && (
         <>
           <h4>Alternative explanations</h4>
-          <ul>{diagnosis.alternativeExplanations.map((item, index) => <li key={index}>{item.explanation}{references(item.evidenceRefs)}</li>)}</ul>
+          <ul>{alternativeExplanations.map((item, index) => <li key={index}>{item.explanation}{references(item.evidenceRefs)}</li>)}</ul>
         </>
       )}
-      <h4>Recommended fix · {diagnosis.recommendedFix.risk} risk · approval required</h4>
-      <p>{diagnosis.recommendedFix.description}{references(diagnosis.recommendedFix.evidenceRefs)}</p>
-      <ul>{diagnosis.recommendedFix.verificationProcedure.map((step, index) => <li key={index}>{step}</li>)}</ul>
-      <details>
-        <summary>Evidence references ({diagnosis.evidenceReferences.length})</summary>
-        <ul>{diagnosis.evidenceReferences.map((reference) => (
+      {diagnosis.recommendedFix && <>
+        <h4>Recommended fix · {diagnosis.recommendedFix.risk} risk · approval required</h4>
+        <p>{diagnosis.recommendedFix.description}{references(diagnosis.recommendedFix.evidenceRefs)}</p>
+        {verificationProcedure.length > 0 && <ul>{verificationProcedure.map((step, index) => <li key={index}>{step}</li>)}</ul>}
+      </>}
+      {evidenceReferences.length > 0 && <details>
+        <summary>Evidence references ({evidenceReferences.length})</summary>
+        <ul>{evidenceReferences.map((reference) => (
           <li key={reference.id}><code>{reference.id}</code> {reference.path}: {formatValue(reference.value)}</li>
         ))}</ul>
-      </details>
-      <small>Model confidence: {Math.round(diagnosis.confidence * 100)}%</small>
+      </details>}
+      <small>{diagnosis.kind === "deterministic" ? "Generated by deterministic rules from stored evidence; no AI model was called." : `Model ${diagnosisConfidenceLabel(diagnosis.confidence)}`}</small>
     </div>
   );
 }

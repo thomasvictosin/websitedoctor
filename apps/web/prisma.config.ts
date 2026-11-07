@@ -5,6 +5,6 @@ export default defineConfig({
   schema: "prisma/schema.prisma",
   migrations: { path: "prisma/migrations" },
   // Use a direct database connection for Prisma CLI schema operations when
-  // configured; the application can use Supabase's session pooler URL.
+  // configured; serverless runtime deployments should use transaction pooling.
   datasource: { url: process.env.DIRECT_URL || env("DATABASE_URL") },
 });
