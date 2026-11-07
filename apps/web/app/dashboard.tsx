@@ -220,10 +220,10 @@ export default function Home() {
       throw new Error("Could not load dashboard data.");
     }
     const [sites, currentIssues, currentSettings, memberData] = await Promise.all([
-      sitesResponse.json(),
-      issuesResponse.json(),
-      settingsResponse.json(),
-      membersResponse.json(),
+      sitesResponse.json() as Promise<Website[]>,
+      issuesResponse.json() as Promise<Issue[]>,
+      settingsResponse.json() as Promise<Settings>,
+      membersResponse.json() as Promise<{ members: Array<{ user: TeamMember; role: string }> }>,
     ]);
     setWebsites(sites);
     setIssues(currentIssues);
@@ -234,7 +234,16 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    refresh().catch((error: unknown) => setMessage(error instanceof Error ? error.message : "Could not load websites."));
+    let active = true;
+    const load = () => refresh().catch((error: unknown) => {
+      if (active) setMessage(error instanceof Error ? error.message : "Could not load dashboard data.");
+    });
+    void load();
+    const timer = window.setInterval(() => { void load(); }, 15_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
   }, [refresh]);
 
   useEffect(() => {
