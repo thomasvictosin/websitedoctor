@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AI Website Doctor
  * Description: Connects this WordPress site to a locally hosted AI Website Doctor for diagnostics and explicitly approved repairs.
- * Version: 0.3.1
+ * Version: 0.4.0
  * Requires at least: 6.2
  * Requires PHP: 8.0
  * License: GPL-2.0-or-later
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('AWD_VERSION', '0.3.1');
+define('AWD_VERSION', '0.4.0');
 define('AWD_OPTION', 'ai_website_doctor_settings');
 define('AWD_RECOVERY_OPTION', 'ai_website_doctor_recovery_points');
 define('AWD_SYNC_OPTION', 'ai_website_doctor_sync_state');
@@ -24,6 +24,7 @@ define('AWD_CONFLICT_REPORT_OPTION', 'ai_website_doctor_staging_conflict_report'
 
 require_once __DIR__ . '/includes/integrity.php';
 require_once __DIR__ . '/includes/cleanup.php';
+require_once __DIR__ . '/includes/plugin-maintenance.php';
 
 // Observe task outcomes without invoking or disabling customer callbacks.
 add_action('init', 'awd_register_cron_observers', PHP_INT_MAX);
@@ -611,7 +612,7 @@ function awd_central_request(string $url, string $method, array $payload, string
     $body = '';
     $args = array(
         'method' => $method,
-        'timeout' => preg_match('#/(?:executions|cleanup-executions)$#', (string) wp_parse_url($url, PHP_URL_PATH)) ? 180 : (str_ends_with((string) wp_parse_url($url, PHP_URL_PATH), '/cleanup') ? 60 : 15),
+        'timeout' => preg_match('#/(?:executions|cleanup-executions)$#', (string) wp_parse_url($url, PHP_URL_PATH)) ? 180 : (preg_match('#/(?:cleanup|fix)$#', (string) wp_parse_url($url, PHP_URL_PATH)) ? 60 : 15),
         'redirection' => 0,
         'reject_unsafe_urls' => true,
         'sslverify' => true,
@@ -802,6 +803,7 @@ function awd_render_central_issues(array $settings, $dashboard): void
         echo '<h3>' . esc_html((string) ($issue['title'] ?? 'Issue')) . ' <span class="awd-muted">' . esc_html(strtoupper($severity)) . ' · ' . esc_html((string) ($issue['status'] ?? 'open')) . '</span></h3>';
         echo '<p>' . esc_html((string) ($issue['description'] ?? '')) . '</p>';
         echo '<p class="awd-muted">Last detected ' . esc_html(awd_plugin_time($issue['lastSeenAt'] ?? null)) . '</p>';
+        awd_render_fix_button($issue);
         if (!empty($diagnosis['diagnosis']) && is_array($diagnosis['diagnosis'])) {
             $result = $diagnosis['diagnosis'];
             echo '<h4>Central AI diagnosis</h4><p><strong>' . esc_html((string) ($result['probableRootCause']['claim'] ?? $result['description'] ?? 'Diagnosis recorded')) . '</strong></p>';
@@ -949,14 +951,23 @@ function awd_collect_diagnostics(array $settings): array
         : array();
     $plugins = array();
 
+    $up_to_date = is_object($updates) && isset($updates->no_update) && is_array($updates->no_update) ? $updates->no_update : array();
     foreach ($all_plugins as $file => $plugin) {
-        $plugins[] = array(
+        $update = $available_updates[$file] ?? null;
+        $known = $update ?? ($up_to_date[$file] ?? null);
+        $entry = array(
             'name' => substr(sanitize_text_field($plugin['Name'] ?? basename($file)), 0, 200),
             'version' => substr(sanitize_text_field($plugin['Version'] ?? ''), 0, 40),
             'file' => substr(sanitize_text_field($file), 0, 200),
             'active' => in_array($file, $active_plugins, true),
             'updateAvailable' => isset($available_updates[$file]),
+            // WordPress.org-hosted plugins can be installed and verified against official checksums.
+            'source' => is_object($known) && isset($known->id) && str_starts_with((string) $known->id, 'w.org/plugins/') ? 'wordpress.org' : 'other',
         );
+        if (is_object($update) && isset($update->new_version) && preg_match('/^[0-9A-Za-z.+-]{1,40}$/', (string) $update->new_version)) {
+            $entry['newVersion'] = (string) $update->new_version;
+        }
+        $plugins[] = $entry;
     }
 
     $theme = wp_get_theme();
@@ -1022,7 +1033,7 @@ function awd_collect_diagnostics(array $settings): array
     $authorized_log_excerpt = !empty($settings['collect_logs']) ? awd_authorized_log_excerpt() : '';
     $php_log_errors = $authorized_log_excerpt !== '' ? awd_parse_php_log_errors($authorized_log_excerpt) : array();
 
-    $integrity = awd_integrity_report(!empty($GLOBALS['awd_force_integrity_scan']));
+    $integrity = awd_integrity_report(!empty($GLOBALS['awd_force_integrity_scan']), $plugins);
     // Compromise findings come first so payload truncation never drops them.
     $issues = awd_integrity_issues($integrity);
     if (version_compare(PHP_VERSION, '8.0', '<')) {

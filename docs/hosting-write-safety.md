@@ -22,6 +22,8 @@ Allowed operations, each bound to evidence the owner reviewed:
 | `rotate_salts` | `wp-config.php` defining each of the eight keys exactly once. | Previous file |
 | `purge_page_cache` | Known cache plugins' purge functions. | None (no state to restore) |
 | `purge_quarantine` | Permanently deletes one run's quarantine; only offered after that run verified. | None: irreversible by design |
+| `update_plugin` / `reinstall_plugin` | An installed WordPress.org plugin at the reviewed version (never AI Website Doctor). The package comes only from `downloads.wordpress.org` and every installed file must match the official per-file checksums for the target version. The site's home page is loaded before and after; if it breaks, the previous directory is put back immediately. | The previous plugin directory |
+| `install_plugin` | A WordPress.org plugin slug that is not installed, at an exact version, verified the same way; optional activation is undone if the site breaks. | Restore deactivates it and moves it to the quarantine |
 
 Invariants:
 
@@ -29,6 +31,7 @@ Invariants:
 - **The plugin revalidates everything** (shape, path confinement under the real site root, no symlinked components, digests) immediately before each change. Writes go to an exclusive temporary file in the same directory followed by `rename`; results are re-read and verified.
 - **Undo before change.** The quarantine lives above the web root when that directory is writable, otherwise in a randomly named `wp-content` directory with deny rules; stored files have a `.bin` name and are never executable. Restoring a run reverses only steps whose target still has the state the cleanup left, so later edits are kept and reported as conflicts.
 - **Verification from outside.** After the run the plugin rescans and syncs, and the central app re-checks the site as a browser, Googlebot and a search visitor. A run is `verified` only when every step applied, no critical or high integrity finding remains, and the outside check is clean.
+- **Maintenance runs (plugin updates and reinstalls) roll back automatically**: unlike malware removal, putting the previous plugin version back is safe, so a failed checksum check or a broken home page restores it inside the same step. They are verified by site availability and the absence of new PHP fatal errors, not by the compromise checks.
 - **No automatic rollback after a failed verification.** Rolling back a partial cleanup would reinstall malware, so changes are kept and the remaining findings are reported. Restore is an explicit administrator action in the plugin.
 
 Accepted residual risk: the plugin's check-then-rename is not compare-and-swap (see the feasibility spike below), and code running on a compromised site can interfere with the plugin itself. Both are accepted for this playbook because the competing writer is the malware being removed, every change has a stored undo copy, and success is judged from outside the site. A write that is immediately overwritten again is reported as a failure ("something on the server is rewriting it").

@@ -330,4 +330,32 @@ $purge = awd_cleanup_op_purge_quarantine(array('runId' => 'fixture-run-0001'), a
 awd_test_assert($purge['status'] === 'applied' && !is_dir($work . '/quarantine/fixture-run-0001'), 'purge must delete the run quarantine');
 awd_cleanup_remove_tree($work);
 
+// WordPress.org plugin checksum comparison and maintenance step validation.
+$plugin_fixture = sys_get_temp_dir() . '/awd-plugin-fixture-' . bin2hex(random_bytes(4));
+mkdir($plugin_fixture . '/inc', 0755, true);
+file_put_contents($plugin_fixture . '/fixture.php', "<?php\n// official\n");
+file_put_contents($plugin_fixture . '/readme.txt', "official readme\n");
+file_put_contents($plugin_fixture . '/inc/backdoor.php', "<?php return;\n");
+$official_plugin = array('fixture.php' => array(md5("<?php\n// official\n")), 'readme.txt' => array(md5('changed upstream'), md5("official readme\n")), 'inc/gone.php' => array(md5('x')));
+$comparison = awd_plugin_compare_directory($plugin_fixture, $official_plugin);
+awd_test_assert($comparison['modified'] === array() && $comparison['missing'] === 1 && $comparison['addedPhp'] === array('inc/backdoor.php'), 'plugin checksum comparison must accept any listed md5 and report added PHP');
+file_put_contents($plugin_fixture . '/fixture.php', "<?php\n// tampered\n");
+$comparison = awd_plugin_compare_directory($plugin_fixture, $official_plugin);
+awd_test_assert($comparison['modified'] === array('fixture.php'), 'a tampered plugin file must be reported');
+awd_cleanup_remove_tree($plugin_fixture);
+$plugin_issues = awd_plugin_integrity_issues(array(array('plugin' => 'fixture/fixture.php', 'version' => '1.0', 'status' => 'modified', 'modified' => array('fixture.php'), 'addedPhp' => array('inc/backdoor.php'), 'missing' => 0)));
+awd_test_assert(($plugin_issues[0]['fingerprint'] ?? '') === 'integrity:plugin-modified:fixture' && $plugin_issues[0]['severity'] === 'critical', 'a plugin with added PHP must be a critical integrity issue');
+awd_test_assert(awd_plugin_slug('elementor/elementor.php') === 'elementor' && awd_plugin_slug('hello.php') === null, 'plugin slug must come from its directory');
+foreach (array(
+    array('operation' => 'update_plugin', 'parameters' => array('plugin' => 'elementor/elementor.php', 'expectedVersion' => '4.3.5', 'targetVersion' => '4.3.6')),
+    array('operation' => 'reinstall_plugin', 'parameters' => array('plugin' => 'wordpress-seo/wp-seo.php', 'expectedVersion' => '28.8')),
+    array('operation' => 'install_plugin', 'parameters' => array('slug' => 'wordfence', 'version' => '9.0.2', 'activate' => 'yes')),
+) as $step) awd_test_assert(awd_cleanup_step_is_valid($step), 'maintenance step must validate: ' . $step['operation']);
+foreach (array(
+    array('operation' => 'update_plugin', 'parameters' => array('plugin' => 'ai-website-doctor/ai-website-doctor.php', 'expectedVersion' => '1', 'targetVersion' => '2')),
+    array('operation' => 'update_plugin', 'parameters' => array('plugin' => 'hello.php', 'expectedVersion' => '1', 'targetVersion' => '2')),
+    array('operation' => 'install_plugin', 'parameters' => array('slug' => '../x', 'version' => '1', 'activate' => 'yes')),
+    array('operation' => 'reinstall_plugin', 'parameters' => array('plugin' => 'a/b.php', 'expectedVersion' => '1', 'extra' => 'x')),
+) as $bad) awd_test_assert(!awd_cleanup_step_is_valid($bad), 'unsafe maintenance step must be rejected');
+
 echo "WordPress plugin tests passed.\n";

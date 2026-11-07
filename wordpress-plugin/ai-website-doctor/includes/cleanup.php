@@ -30,10 +30,11 @@ define('AWD_CLEANUP_SALT_KEYS', 'AUTH_KEY,SECURE_AUTH_KEY,LOGGED_IN_KEY,NONCE_KE
 
 add_action('admin_post_awd_cleanup_run', 'awd_cleanup_run_from_admin');
 add_action('admin_post_awd_cleanup_restore', 'awd_cleanup_restore_from_admin');
+add_action('admin_post_awd_fix_issue', 'awd_fix_issue_from_admin');
 
 function awd_cleanup_operations(): array
 {
-    return array('quarantine_file', 'restore_core_file', 'remove_htaccess_rules', 'quarantine_plugin', 'demote_user', 'rotate_salts', 'purge_page_cache', 'purge_quarantine');
+    return array('quarantine_file', 'restore_core_file', 'remove_htaccess_rules', 'quarantine_plugin', 'demote_user', 'rotate_salts', 'purge_page_cache', 'purge_quarantine', 'update_plugin', 'reinstall_plugin', 'install_plugin');
 }
 
 function awd_cleanup_root(): string
@@ -127,6 +128,17 @@ function awd_cleanup_step_is_valid($step): bool
             return $keys === array();
         case 'purge_quarantine':
             return $keys === array('runId') && (bool) preg_match('/^[a-z0-9-]{8,64}$/', $params['runId']);
+        case 'update_plugin':
+            return $keys === array('expectedVersion', 'plugin', 'targetVersion') && awd_plugin_slug($params['plugin']) !== null
+                && strpos($params['plugin'], 'ai-website-doctor/') !== 0 && (bool) preg_match('#^[a-z0-9-]+/[A-Za-z0-9._-]+\.php$#', $params['plugin'])
+                && (bool) preg_match('/^[0-9A-Za-z.+-]{1,40}$/', $params['expectedVersion']) && (bool) preg_match('/^[0-9A-Za-z.+-]{1,40}$/', $params['targetVersion']);
+        case 'reinstall_plugin':
+            return $keys === array('expectedVersion', 'plugin') && awd_plugin_slug($params['plugin']) !== null
+                && strpos($params['plugin'], 'ai-website-doctor/') !== 0 && (bool) preg_match('#^[a-z0-9-]+/[A-Za-z0-9._-]+\.php$#', $params['plugin'])
+                && (bool) preg_match('/^[0-9A-Za-z.+-]{1,40}$/', $params['expectedVersion']);
+        case 'install_plugin':
+            return $keys === array('activate', 'slug', 'version') && (bool) preg_match('/^[a-z0-9][a-z0-9-]{0,99}$/', $params['slug']) && $params['slug'] !== 'ai-website-doctor'
+                && (bool) preg_match('/^[0-9A-Za-z.+-]{1,40}$/', $params['version']) && in_array($params['activate'], array('yes', 'no'), true);
     }
     return false;
 }
@@ -478,6 +490,9 @@ function awd_cleanup_execute_steps(string $run_id, string $repair_id, array $ste
         'rotate_salts' => 'awd_cleanup_op_rotate_salts',
         'purge_page_cache' => 'awd_cleanup_op_purge_page_cache',
         'purge_quarantine' => 'awd_cleanup_op_purge_quarantine',
+        'update_plugin' => 'awd_cleanup_op_update_plugin',
+        'reinstall_plugin' => 'awd_cleanup_op_reinstall_plugin',
+        'install_plugin' => 'awd_cleanup_op_install_plugin',
     );
     $results = array();
     foreach (array_values($steps) as $index => $step) {
@@ -550,6 +565,13 @@ function awd_cleanup_restore_run(string $run_id, array $context = array()): arra
                 global $wpdb;
                 $wpdb->update($wpdb->users, array('user_pass' => (string) $recovery['passHash']), array('ID' => (int) $recovery['userId']));
                 clean_user_cache((int) $recovery['userId']);
+                break;
+            case 'update_plugin':
+            case 'reinstall_plugin':
+                list($status, $message) = awd_plugin_restore_replace($recovery, WP_PLUGIN_DIR, $dir);
+                break;
+            case 'install_plugin':
+                list($status, $message) = awd_plugin_restore_install($recovery, WP_PLUGIN_DIR, $dir);
                 break;
             default:
                 continue 2;
@@ -677,4 +699,42 @@ function awd_render_cleanup_section(array $settings): void
         }
         echo '</ul>';
     }
+}
+
+/** Findings the central app can fix with one approved maintenance step. */
+function awd_issue_is_fixable(array $issue): bool
+{
+    $fingerprint = (string) ($issue['fingerprint'] ?? '');
+    return ($issue['status'] ?? '') !== 'resolved'
+        && (str_starts_with($fingerprint, 'wp:plugin-update:') || str_starts_with($fingerprint, 'wp:integrity:plugin-modified:'));
+}
+
+function awd_render_fix_button(array $issue): void
+{
+    if (!awd_issue_is_fixable($issue) || !preg_match('/^[A-Za-z0-9_-]{1,64}$/', (string) ($issue['id'] ?? ''))) return;
+    $update = str_starts_with((string) $issue['fingerprint'], 'wp:plugin-update:');
+    echo '<form class="awd-inline-form" method="post" action="' . esc_url(admin_url('admin-post.php')) . '" onsubmit="return confirm(' . esc_attr(wp_json_encode($update
+        ? 'Update this plugin now? The current version is kept in the quarantine and put back automatically if the update fails its checks or breaks the site.'
+        : 'Reinstall this plugin from WordPress.org? The current files are kept in the quarantine and can be restored.')) . ');">';
+    echo '<input type="hidden" name="action" value="awd_fix_issue"><input type="hidden" name="issue_id" value="' . esc_attr((string) $issue['id']) . '">';
+    wp_nonce_field('awd_fix_issue_' . $issue['id']);
+    submit_button($update ? 'Fix: update plugin now' : 'Fix: reinstall plugin now', 'primary', 'submit', false);
+    echo '</form>';
+}
+
+function awd_fix_issue_from_admin(): void
+{
+    if (!current_user_can('manage_options')) wp_die(esc_html__('You are not allowed to fix issues.', 'ai-website-doctor'), 403);
+    $issue_id = isset($_POST['issue_id']) ? sanitize_text_field(wp_unslash($_POST['issue_id'])) : '';
+    check_admin_referer('awd_fix_issue_' . $issue_id);
+    if (!preg_match('/^[A-Za-z0-9_-]{1,64}$/', $issue_id)) awd_redirect('Invalid issue.', 'error');
+    $settings = awd_settings();
+    $response = awd_authenticated_request($settings, '/fix', 'POST', array('issueId' => $issue_id, 'confirm' => true));
+    if (is_wp_error($response)) awd_redirect('The central app did not approve the fix: ' . $response->get_error_message(), 'error');
+    $body = json_decode(wp_remote_retrieve_body($response), true);
+    if (!is_array($body) || empty($body['task']) || !is_array($body['task'])) awd_redirect('The central app did not return an approved fix.', 'error');
+    $outcome = awd_cleanup_execute_task($settings, $body['task']);
+    $detail = '';
+    foreach ((array) ($outcome['results'] ?? array()) as $result) $detail .= ' ' . (string) $result['message'];
+    awd_redirect(trim($outcome['message'] . $detail), $outcome['ok'] ? 'success' : 'warning');
 }

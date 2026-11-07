@@ -679,6 +679,38 @@ export default function Home() {
     }
   }
 
+  function oneClickFix(issue: Issue) {
+    if (issue.status === "resolved") return null;
+    if (issue.fingerprint.startsWith("wp:plugin-update:")) return { label: "Fix: update plugin", confirm: "Update this plugin on the live site now? It is downloaded from WordPress.org, checked against the official checksums, and the previous version is put back automatically if the site breaks." };
+    if (issue.fingerprint.startsWith("wp:integrity:plugin-modified:")) return { label: "Fix: reinstall plugin", confirm: "Reinstall this plugin from WordPress.org? Its current, modified files are kept in the quarantine and can be restored." };
+    if (/^(?:wp:)?(?:security|integrity):/.test(issue.fingerprint)) return { label: "Fix: open cleanup", confirm: null };
+    return null;
+  }
+
+  async function fixIssue(issue: Issue) {
+    const fix = oneClickFix(issue);
+    if (!fix) return;
+    if (!fix.confirm) {
+      setSelectedWebsiteId(issue.website.id);
+      setWebsiteDetailTab("cleanup");
+      setMessage("Compromise findings are fixed together: review the cleanup plan and approve it once.");
+      return;
+    }
+    if (!window.confirm(fix.confirm)) return;
+    setBusy(`fix:${issue.id}`);
+    try {
+      const response = await fetch(`/api/issues/${issue.id}/fix`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ confirm: true }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "The fix could not be approved.");
+      setMessage(`${result.steps?.join(" ") ?? "Fix approved."} ${result.message}`);
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The fix could not be approved.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function proposeRepair(issue: Issue): Promise<Record<string, unknown> | null> {
     setBusy(`repair:${issue.id}`);
     try {
@@ -1296,6 +1328,11 @@ export default function Home() {
                     : "Not assessed yet. Review a repair plan to check for a supported, evidence backed operation."}</small>
                 {issue.toolIds.length > 0 && <small className="tool-evidence">Relevant evidence: {issue.toolIds.join(", ")}</small>}
                 <div className="issue-actions">
+                  {oneClickFix(issue) && (
+                    <button className="button primary" onClick={() => fixIssue(issue)} disabled={busy !== null || issue.repairs.some((repair) => (repair.proposal as { kind?: string }).kind === "compromise_cleanup" && ["approved", "executing"].includes(repair.status))}>
+                      {busy === `fix:${issue.id}` ? "Approving…" : issue.repairs.some((repair) => (repair.proposal as { kind?: string }).kind === "compromise_cleanup" && ["approved", "executing"].includes(repair.status)) ? "Fix in progress…" : oneClickFix(issue)!.label}
+                    </button>
+                  )}
                   <button className="button ghost" onClick={() => loadRecommendation(issue)} disabled={busy !== null}>
                     {busy === `recommend:${issue.id}` ? "Preparing…" : recommendations[issue.id] ? "Refresh Recommendation" : "Get Recommendation (No AI)"}
                   </button>

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { authorizeOwnerRequest } from "@/lib/auth-api";
-import { CleanupError, isCleanupProposal, loadCleanupPlan, startCleanup, startQuarantinePurge } from "@/lib/cleanup-service";
+import { CleanupError, isCleanupProposal, loadCleanupPlan, maintenanceSummary, startCleanup, startPluginUpdates, startQuarantinePurge } from "@/lib/cleanup-service";
 import { db } from "@/lib/db";
 import { ownedWebsiteWhere } from "@/lib/ownership";
 import { readBoundedJson } from "@/lib/request-json";
@@ -22,7 +22,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ site
   const { siteId } = await params;
   const owned = await ownedSite(request, siteId, false);
   if ("response" in owned) return owned.response;
-  const { plan } = await loadCleanupPlan(owned.website.id);
+  const { plan, agent } = await loadCleanupPlan(owned.website.id);
   const runs = (await db.repairProposal.findMany({
     where: { websiteId: owned.website.id, proposal: { path: ["kind"], equals: "compromise_cleanup" } },
     orderBy: { createdAt: "desc" }, take: 10,
@@ -31,12 +31,13 @@ export async function GET(request: Request, { params }: { params: Promise<{ site
     const cleanup = (proposal as { cleanup?: { steps?: unknown[]; execution?: { steps?: unknown; verification?: unknown } } }).cleanup ?? {};
     return { ...run, title: (proposal as { issue?: string }).issue, stepCount: cleanup.steps?.length ?? 0, results: cleanup.execution?.steps ?? null, verification: cleanup.execution?.verification ?? null };
   });
-  return NextResponse.json({ plan, runs }, { headers: { "cache-control": "no-store" } });
+  return NextResponse.json({ plan, maintenance: maintenanceSummary(agent?.diagnostics ?? null), runs }, { headers: { "cache-control": "no-store" } });
 }
 
 const startSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("start"), planDigest: z.string().regex(/^[a-f0-9]{64}$/), include: z.array(z.string().max(120)).max(60).default([]), confirm: z.literal(true) }).strict(),
   z.object({ action: z.literal("purge"), repairId: z.string().min(1).max(64), confirm: z.literal(true) }).strict(),
+  z.object({ action: z.literal("update_plugins"), plugins: z.array(z.string().max(200)).max(60).optional(), confirm: z.literal(true) }).strict(),
 ]);
 
 /** Approve the reviewed plan (one click) or approve purging a verified run's quarantine. */
@@ -50,10 +51,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ sit
   try {
     const started = parsed.data.action === "start"
       ? await startCleanup({ websiteId: owned.website.id, organizationId: owned.website.organizationId, planDigest: parsed.data.planDigest, include: parsed.data.include, actor })
-      : await startQuarantinePurge({ websiteId: owned.website.id, organizationId: owned.website.organizationId, repairId: parsed.data.repairId, actor });
+      : parsed.data.action === "purge"
+        ? await startQuarantinePurge({ websiteId: owned.website.id, organizationId: owned.website.organizationId, repairId: parsed.data.repairId, actor })
+        : await startPluginUpdates({ websiteId: owned.website.id, organizationId: owned.website.organizationId, plugins: parsed.data.plugins, actor });
     return NextResponse.json({
       repairId: started.repairId,
       stepCount: started.steps.length,
+      ...("skipped" in started ? { skipped: started.skipped } : {}),
       status: "queued_for_site_poll",
       message: "Approved. The WordPress plugin runs it on its next poll (WP-Cron, usually within 5 minutes; an administrator can also run it immediately from the plugin). Follow the repair status until it is verified.",
     }, { status: 201, headers: { "cache-control": "no-store" } });

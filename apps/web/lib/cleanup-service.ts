@@ -1,7 +1,8 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { db } from "./db.ts";
-import { buildCleanupPlan, cleanupStepSchema, cleanupStepsDigest, fetchOfficialChecksums, selectCleanupSteps, type CleanupPlan, type CleanupStep } from "./cleanup-plan.ts";
+import { buildCleanupPlan, cleanupStepSchema, cleanupStepsDigest, fetchOfficialChecksums, fixPlanForIssue, pluginUpdateSteps, selectCleanupSteps, type CleanupPlan, type CleanupStep } from "./cleanup-plan.ts";
+import { checkWebsite } from "./monitor.ts";
 import { runAndStoreSecurityCheck } from "./monitoring-service.ts";
 
 /**
@@ -52,15 +53,15 @@ export async function startCleanup(input: {
   include: string[];
   actor: { kind: "admin" | "wordpress_admin" | "mcp"; userId: string | null };
   /** Pre-built steps for follow-up runs (purge); otherwise built from the current plan. */
-  explicit?: { steps: CleanupStep[]; title: string; relatedRepairId: string };
+  explicit?: { steps: CleanupStep[]; title: string; relatedRepairId?: string; issueId?: string; mode?: "compromise" | "maintenance" };
 }) {
   let plan: CleanupPlan | null = null;
   let steps: CleanupStep[];
   let anchorIssueId: string | null = null;
   if (input.explicit) {
     steps = input.explicit.steps;
-    const related = await db.repairProposal.findUnique({ where: { id: input.explicit.relatedRepairId }, select: { issueId: true } });
-    anchorIssueId = related?.issueId ?? null;
+    const related = input.explicit.relatedRepairId ? await db.repairProposal.findUnique({ where: { id: input.explicit.relatedRepairId }, select: { issueId: true } }) : null;
+    anchorIssueId = input.explicit.issueId ?? related?.issueId ?? null;
   } else {
     const loaded = await loadCleanupPlan(input.websiteId);
     plan = loaded.plan;
@@ -113,13 +114,17 @@ export async function startCleanup(input: {
           requiresApproval: true,
           executionAvailable: false,
           instructions: { steps: [], rollbackPlan: ["Every changed or removed file, the previous .htaccess and wp-config.php, and demoted users' roles are kept in the plugin's quarantine. Restore the run from the plugin's Compromise cleanup section; targets changed since the cleanup are kept."], requiresApproval: true },
-          verificationPlan: [
+          verificationPlan: input.explicit?.mode === "maintenance" ? [
+            "Packages come only from downloads.wordpress.org and every installed file must match the official WordPress.org checksums.",
+            "The plugin loads the home page after each change; if the site breaks, the previous version is put back automatically.",
+            "The central app confirms the site is available and that no new PHP fatal error was reported after the change.",
+          ] : [
             "The plugin re-verifies every target digest before changing it and verifies each result.",
             "The plugin reruns the integrity scan and syncs it; no critical or high integrity finding may remain.",
             "The central app re-checks the site from outside as a browser, Googlebot and a search visitor; no cloaking, redirect, blank page or spam sitemap may remain.",
             "A failed verification keeps the changes (rolling back would reinstall malware) and reports what remains.",
           ],
-          cleanup: { steps, stepsDigest: digest, planDigest: input.planDigest, include: input.include, generatedAt: plan?.generatedAt ?? now.toISOString(), relatedRepairId: input.explicit?.relatedRepairId ?? null },
+          cleanup: { mode: input.explicit?.mode ?? "compromise", steps, stepsDigest: digest, planDigest: input.planDigest, include: input.include, generatedAt: plan?.generatedAt ?? now.toISOString(), relatedRepairId: input.explicit?.relatedRepairId ?? null },
         } as Prisma.InputJsonValue,
       },
     });
@@ -233,6 +238,7 @@ export async function recordCleanupReport(agent: { id: string; websiteId: string
   if (!grant) throw new CleanupError("The report does not match the dispatched cleanup authorization.", 403);
   if (repair.status !== "executing") throw new CleanupError("This cleanup run is not awaiting a result.", 409);
 
+  if (cleanup.mode === "maintenance") return recordMaintenanceReport(agent, repair, proposal, cleanup, report);
   const failed = report.steps.filter((step) => step.status === "failed");
   const notAttempted = report.steps.filter((step) => step.status === "not_attempted");
   const applied = report.steps.filter((step) => step.status === "applied");
@@ -295,4 +301,83 @@ export async function startQuarantinePurge(input: { websiteId: string; organizat
     websiteId: input.websiteId, organizationId: input.organizationId, planDigest: "purge", include: [], actor: input.actor,
     explicit: { title: "Permanently delete quarantined files", relatedRepairId: input.repairId, steps: [{ description: "Permanently delete the files quarantined by the verified cleanup. After this the cleanup can no longer be restored.", operation: "purge_quarantine", parameters: { runId } }] },
   });
+}
+
+/** Verification for update/reinstall runs: every step applied, site available, no new PHP fatal error. */
+async function recordMaintenanceReport(
+  agent: { id: string; websiteId: string },
+  repair: { id: string; website: { id: string; url: string } },
+  proposal: Json, cleanup: Json, report: z.infer<typeof cleanupReportSchema>,
+) {
+  const failed = report.steps.filter((step) => step.status === "failed");
+  const notAttempted = report.steps.filter((step) => step.status === "not_attempted");
+  const applied = report.steps.filter((step) => step.status === "applied");
+  const reasons: string[] = failed.slice(0, 10).map((step) => `Step ${step.index + 1} (${step.operation ?? "step"}): ${step.message}`);
+  if (notAttempted.length) reasons.push(`${notAttempted.length} step(s) were not attempted within the time budget; run the update again for the rest.`);
+  if (!report.diagnosticsSynced) reasons.push("The plugin could not sync fresh diagnostics after the change.");
+  const availability = await checkWebsite(repair.website.url);
+  if (!availability.available) reasons.push(`The site is not available after the change: ${availability.error ?? `HTTP ${availability.statusCode}`}`);
+  const since = report.startedAt ? new Date(report.startedAt) : new Date(Date.now() - 15 * 60_000);
+  const newFatals = await db.issue.findMany({ where: { websiteId: agent.websiteId, fingerprint: { startsWith: "wp:php-fatal:" }, status: "open", firstSeenAt: { gte: since } }, select: { title: true, description: true } });
+  for (const fatal of newFatals) reasons.push(`New PHP fatal error after the change: ${fatal.description.slice(0, 200)}`);
+  const verificationStatus = !report.diagnosticsSynced ? "inconclusive" : reasons.length === 0 ? "verified" : "failed";
+  const status = verificationStatus === "verified" ? "verified" : "failed";
+  const execution = { runId: report.runId, startedAt: report.startedAt, completedAt: report.completedAt, steps: report.steps, verification: { status: verificationStatus, reasons, availability } };
+  await db.repairProposal.update({
+    where: { id: repair.id },
+    data: {
+      status,
+      executionStatus: failed.length || notAttempted.length ? (applied.length ? "partial" : "failed") : "completed",
+      verificationStatus,
+      backupStatus: applied.length ? "created" : "not_required",
+      rollbackStatus: failed.some((step) => /put back/.test(step.message)) ? "completed" : "not_requested",
+      proposal: { ...proposal, cleanup: { ...cleanup, execution } } as Prisma.InputJsonValue,
+    },
+  });
+  const agentExecution = await db.agentExecution.update({
+    where: { agentId_repairId: { agentId: agent.id, repairId: repair.id } },
+    data: { status: failed.length ? "completed_with_failures" : "completed", completedAt: new Date(report.completedAt), result: execution as Prisma.InputJsonValue },
+  });
+  await db.verificationResult.create({ data: { repairId: repair.id, executionId: agentExecution.id, status: verificationStatus, method: "checksums_site_health_and_availability", result: execution.verification as Prisma.InputJsonValue } });
+  await db.repairEvent.create({ data: { repairId: repair.id, eventType: `maintenance_${verificationStatus}`, actor: "central", details: { applied: applied.length, failed: failed.length, reasons: reasons.slice(0, 10) } } });
+  return { status, verificationStatus, applied: applied.length, failed: failed.length, notAttempted: notAttempted.length, reasons };
+}
+
+/** One-click fix for a finding (plugin update or reinstall). */
+export async function startIssueFix(input: { issueId: string; websiteId: string; organizationId: string; actor: { kind: "admin" | "wordpress_admin" | "mcp"; userId: string | null } }) {
+  const [issue, agent] = await Promise.all([
+    db.issue.findFirst({ where: { id: input.issueId, websiteId: input.websiteId }, select: { id: true, fingerprint: true, status: true } }),
+    db.wordPressAgent.findFirst({ where: { websiteId: input.websiteId, revokedAt: null }, select: { diagnostics: true, lastSeenAt: true } }),
+  ]);
+  if (!issue) throw new CleanupError("Issue not found.", 404);
+  if (issue.status === "resolved") throw new CleanupError("This issue is already resolved.", 409);
+  await requireMaintenancePlugin(agent);
+  const fix = fixPlanForIssue(issue.fingerprint, agent!.diagnostics);
+  if (!fix) throw new CleanupError("This finding has no one-click fix; follow its recommendation instead.", 400);
+  if (!fix.steps.length) throw new CleanupError(fix.skipped.join(" ") || "There is nothing to fix.", 409);
+  return startCleanup({ websiteId: input.websiteId, organizationId: input.organizationId, planDigest: "fix", include: [], actor: input.actor, explicit: { steps: fix.steps, title: fix.title, issueId: issue.id, mode: "maintenance" } });
+}
+
+/** One-click update of WordPress.org plugins with available updates (all, or the listed files). */
+export async function startPluginUpdates(input: { websiteId: string; organizationId: string; plugins?: string[]; actor: { kind: "admin" | "wordpress_admin" | "mcp"; userId: string | null } }) {
+  const agent = await db.wordPressAgent.findFirst({ where: { websiteId: input.websiteId, revokedAt: null }, select: { diagnostics: true, lastSeenAt: true } });
+  await requireMaintenancePlugin(agent);
+  const updates = pluginUpdateSteps(agent!.diagnostics, input.plugins);
+  if (!updates.steps.length) throw new CleanupError(updates.skipped.join(" ") || "No WordPress.org plugin has an update available.", 409);
+  const started = await startCleanup({ websiteId: input.websiteId, organizationId: input.organizationId, planDigest: "update_plugins", include: [], actor: input.actor, explicit: { steps: updates.steps, title: updates.title, mode: "maintenance" } });
+  return { ...started, skipped: updates.skipped };
+}
+
+async function requireMaintenancePlugin(agent: { diagnostics: unknown; lastSeenAt: Date } | null) {
+  if (!agent) throw new CleanupError("No WordPress plugin is connected to this website.", 409);
+  if (agent.lastSeenAt.getTime() < Date.now() - 15 * 60_000) throw new CleanupError("The WordPress plugin has not checked in for 15 minutes; it must be online to apply the fix.", 409);
+  const version = record(record(agent.diagnostics).site).pluginVersion;
+  const [major, minor] = typeof version === "string" ? version.split(".").map(Number) : [0, 0];
+  if (!(major > 0 || minor >= 4)) throw new CleanupError(`One-click plugin fixes need AI Website Doctor 0.4.0 or later on the site (it reports ${typeof version === "string" ? version : "an older version"}).`, 409);
+}
+
+/** Summary of one-click maintenance available for a site (shown next to the cleanup plan). */
+export function maintenanceSummary(diagnostics: unknown) {
+  const updates = pluginUpdateSteps(diagnostics);
+  return { pluginUpdates: updates.steps.map((step) => ({ plugin: step.parameters.plugin, description: step.description })), notUpdatable: updates.skipped };
 }

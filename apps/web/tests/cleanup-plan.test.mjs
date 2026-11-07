@@ -128,3 +128,37 @@ test("version comparison and checksum fetch", async () => {
   assert.deepEqual(urls.map((url) => new URL(url).searchParams.get("locale")), ["de_DE", "en_US"]);
   assert.equal(await fetchOfficialChecksums("not a version", "en_US", fetcher), null);
 });
+
+test("one-click fixes map findings to WordPress.org update and reinstall steps", async () => {
+  const { createHash } = await import("node:crypto");
+  const { fixPlanForIssue, pluginUpdateSteps } = await import("../lib/cleanup-plan.ts");
+  const data = diagnostics();
+  data.plugins = [
+    { name: "Elementor", version: "4.3.5", file: "elementor/elementor.php", active: true, updateAvailable: true, source: "wordpress.org", newVersion: "4.3.6" },
+    { name: "WPBakery Page Builder", version: "8.2", file: "js_composer/js_composer.php", active: true, updateAvailable: true, source: "other" },
+    { name: "Yoast SEO", version: "28.8", file: "wordpress-seo/wp-seo.php", active: true, updateAvailable: false, source: "wordpress.org" },
+  ];
+  data.integrity.pluginIntegrity = [{ plugin: "wordpress-seo/wp-seo.php", version: "28.8", status: "modified", modified: ["wp-seo.php"], addedPhp: ["inc/x.php"], missing: 0, checkedAt: NOW.toISOString() }];
+  const hash = (file) => createHash("sha256").update(file).digest("hex").slice(0, 20);
+  const update = fixPlanForIssue(`wp:plugin-update:${hash("elementor/elementor.php")}`, data);
+  assert.deepEqual(update.steps.map((step) => [step.operation, step.parameters]), [["update_plugin", { plugin: "elementor/elementor.php", expectedVersion: "4.3.5", targetVersion: "4.3.6" }]]);
+  const premium = fixPlanForIssue(`wp:plugin-update:${hash("js_composer/js_composer.php")}`, data);
+  assert.equal(premium.steps.length, 0);
+  assert.match(premium.skipped[0], /vendor/);
+  const reinstall = fixPlanForIssue("wp:integrity:plugin-modified:wordpress-seo", data);
+  assert.deepEqual(reinstall.steps[0].parameters, { plugin: "wordpress-seo/wp-seo.php", expectedVersion: "28.8" });
+  assert.equal(fixPlanForIssue("security:cloaking", data), null);
+  const all = pluginUpdateSteps(data);
+  assert.equal(all.steps.length, 1);
+  assert.equal(all.skipped.length, 1);
+  assert.ok([...update.steps, ...reinstall.steps].every((step) => cleanupStepSchema.safeParse(step).success));
+  // The compromise plan reinstalls tampered WordPress.org plugins too.
+  const plan = buildCleanupPlan({ diagnostics: data, openIssues: issues, officialChecksums: official, now: NOW });
+  assert.ok(plan.steps.some((step) => step.operation === "reinstall_plugin" && step.parameters.plugin === "wordpress-seo/wp-seo.php"));
+  for (const bad of [
+    { operation: "update_plugin", parameters: { plugin: "ai-website-doctor/ai-website-doctor.php", expectedVersion: "1", targetVersion: "2" } },
+    { operation: "update_plugin", parameters: { plugin: "hello.php", expectedVersion: "1", targetVersion: "2" } },
+    { operation: "install_plugin", parameters: { slug: "../evil", version: "1", activate: "yes" } },
+    { operation: "install_plugin", parameters: { slug: "wordfence", version: "1", activate: "maybe" } },
+  ]) assert.equal(isAllowedCleanupStep(bad), false, JSON.stringify(bad));
+});

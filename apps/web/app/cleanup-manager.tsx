@@ -37,11 +37,15 @@ const OPERATION_LABELS: Record<string, string> = {
   rotate_salts: "Rotate salts",
   purge_page_cache: "Purge cache",
   purge_quarantine: "Delete quarantine",
+  update_plugin: "Update plugin",
+  reinstall_plugin: "Reinstall plugin",
+  install_plugin: "Install plugin",
 };
 
 /** One-click compromise cleanup: review the exact plan, approve it, follow verification. */
 export function CleanupManager({ websiteId }: { websiteId: string }) {
   const [plan, setPlan] = useState<CleanupPlan | null>(null);
+  const [maintenance, setMaintenance] = useState<{ pluginUpdates: Array<{ plugin: string; description: string }>; notUpdatable: string[] } | null>(null);
   const [runs, setRuns] = useState<CleanupRun[]>([]);
   const [include, setInclude] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -53,6 +57,7 @@ export function CleanupManager({ websiteId }: { websiteId: string }) {
       const body = await response.json();
       if (!response.ok) throw new Error(body.error ?? "Could not load the cleanup plan.");
       setPlan(body.plan);
+      setMaintenance(body.maintenance ?? null);
       setRuns(body.runs ?? []);
       setInclude((current) => current.filter((id) => body.plan.optional.some((item: { id: string }) => item.id === id)));
     } catch (error) {
@@ -139,6 +144,22 @@ export function CleanupManager({ websiteId }: { websiteId: string }) {
         <>
           <h4>Also do manually</h4>
           <ul>{plan.manual.map((item) => <li key={item}>{item}</li>)}</ul>
+        </>
+      )}
+      {maintenance && (maintenance.pluginUpdates.length > 0 || maintenance.notUpdatable.length > 0) && (
+        <>
+          <h4>Plugin updates</h4>
+          {maintenance.pluginUpdates.length > 0 && (
+            <>
+              <ul>{maintenance.pluginUpdates.map((item) => <li key={item.plugin}>{item.description}</li>)}</ul>
+              <button className="button secondary" disabled={busy || active}
+                onClick={() => post({ action: "update_plugins", confirm: true },
+                  `Update ${maintenance.pluginUpdates.length} plugin(s) on the live site? Each one is downloaded from WordPress.org and checked against the official checksums, and its previous version is put back automatically if the site breaks.`)}>
+                {`Update ${maintenance.pluginUpdates.length} plugin(s) from WordPress.org`}
+              </button>
+            </>
+          )}
+          {maintenance.notUpdatable.length > 0 && <ul className="diagnostic-limit">{maintenance.notUpdatable.map((item) => <li key={item}>{item}</li>)}</ul>}
         </>
       )}
       {message && <p role="status">{message}</p>}

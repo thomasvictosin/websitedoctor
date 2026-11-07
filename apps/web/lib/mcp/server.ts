@@ -15,6 +15,7 @@ const scanStatusRoute = () => import("@/app/api/sites/[siteId]/scans/[scanId]/ro
 const securityCheckRoute = () => import("@/app/api/sites/[siteId]/security-check/route").then((module) => module.POST);
 const cleanupGetRoute = () => import("@/app/api/sites/[siteId]/cleanup/route").then((module) => module.GET);
 const cleanupPostRoute = () => import("@/app/api/sites/[siteId]/cleanup/route").then((module) => module.POST);
+const fixIssueRoute = () => import("@/app/api/issues/[issueId]/fix/route").then((module) => module.POST);
 const historyRoute = () => import("@/app/api/sites/[siteId]/history/route").then((module) => module.GET);
 const repairPolicyRoute = () => import("@/app/api/sites/[siteId]/repair-authorization/route").then((module) => module.GET);
 
@@ -33,6 +34,7 @@ How the system works:
 - You cannot connect to WordPress directly. Repairs reach the plugin only through the central app: propose_repair creates an evidence-backed proposal, and apply_repair approves and queues it. The plugin executes it on its next poll (WP-Cron, traffic-triggered, typically within 5 minutes), records an operation-specific recovery point first, and the central app verifies the result and rolls back on failure.
 - Only allowlisted operations can execute: disable_plugin, switch_theme, update_setting (blogname/blogdescription), replace_post_link, add_scoped_css_rule (staging only). Everything else gets manual guidance. You cannot run code, SQL, shell, or edit arbitrary files.
 - Hacked sites have a separate compromise cleanup playbook (plugin 0.3.0+): get_cleanup_plan builds an ordered list from the integrity scan and outside check (quarantine malicious/unknown files, restore modified core files from WordPress.org, remove injected .htaccess rules, optionally remove risky plugins or demote unknown admins, rotate salts, purge cache). start_cleanup approves exactly the reviewed plan (bound by planDigest) in one step. The plugin runs it on its next poll, keeps everything it changes in a private quarantine, rescans, and the app verifies from outside. A failed verification keeps the changes and lists what remains. purge_quarantine permanently deletes a verified run's quarantine.
+- One-click maintenance (plugin 0.4.0+): fix_issue applies a finding's single fix (update a plugin with an available update, or reinstall a WordPress.org plugin whose code differs from the official checksums); update_plugins updates all WordPress.org plugins with updates. Packages come only from WordPress.org, every file is checked against official checksums, and the previous version is put back automatically if the update fails or breaks the site. Premium plugins (not on WordPress.org) must be updated from their vendor.
 
 Recommended workflow:
 1. list_websites, then list_issues for the site. When asked about a site's health or security, also run_security_check: a 200 response does not mean the site is healthy.
@@ -334,6 +336,26 @@ export function createWebsiteDoctorMcpServer(principal: RequestPrincipal, origin
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   }, async ({ siteId, repairId, confirm }) => {
     const result = await callRoute(cleanupPostRoute, `/api/sites/${encodeURIComponent(siteId)}/cleanup`, { method: "POST", body: { action: "purge", repairId, confirm }, params: { siteId }, headers: { "x-awd-interface": "mcp" } });
+    return result.ok ? text(result.data) : failure(result);
+  });
+
+  tool("fix_issue", {
+    title: "Apply a finding's one-click fix",
+    description: "Approve and queue the one-click fix for an issue: 'Plugin update available' findings update that WordPress.org plugin to the available version; 'Plugin code differs from the official release' findings reinstall it. Changes the live site; ask the user first. Compromise (security/integrity) findings are fixed together with start_cleanup instead. Follow get_repair_status with the returned repairId.",
+    inputSchema: { issueId: z.string().min(1).max(64), confirm: z.literal(true) },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async ({ issueId, confirm }) => {
+    const result = await callRoute(fixIssueRoute, `/api/issues/${encodeURIComponent(issueId)}/fix`, { method: "POST", body: { confirm }, params: { issueId }, headers: { "x-awd-interface": "mcp" } });
+    return result.ok ? text(result.data) : failure(result);
+  });
+
+  tool("update_plugins", {
+    title: "Update WordPress.org plugins",
+    description: "Approve and queue updates for WordPress.org plugins with an available update (all of them, or only the listed plugin files, e.g. 'elementor/elementor.php'). Each update is verified against official checksums and rolled back automatically if it fails or breaks the site. The response lists plugins that cannot be updated this way (premium/vendor plugins). Changes the live site; ask the user first.",
+    inputSchema: { siteId: z.string().min(1).max(64), plugins: z.array(z.string().max(200)).max(60).optional(), confirm: z.literal(true) },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async ({ siteId, plugins, confirm }) => {
+    const result = await callRoute(cleanupPostRoute, `/api/sites/${encodeURIComponent(siteId)}/cleanup`, { method: "POST", body: { action: "update_plugins", ...(plugins ? { plugins } : {}), confirm }, params: { siteId }, headers: { "x-awd-interface": "mcp" } });
     return result.ok ? text(result.data) : failure(result);
   });
 

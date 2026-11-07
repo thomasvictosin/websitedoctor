@@ -3,7 +3,7 @@ Contributors: ai-website-doctor
 Tags: diagnostics, monitoring, wordpress
 Requires at least: 6.2
 Requires PHP: 8.0
-Stable tag: 0.3.1
+Stable tag: 0.4.0
 License: GPL-2.0-or-later
 
 Connects a WordPress site to a locally hosted AI Website Doctor app for authorized diagnostics and explicitly approved, allowlisted repairs.
@@ -48,6 +48,10 @@ For an executable proposal, **Approve & apply now** records central approval and
 When the central app's outside check or this plugin's integrity scan shows the site is compromised, the Compromise cleanup section lists the exact changes the cleanup will make: quarantining unknown and malicious files (including a physical robots.txt and sitemap files the spam advertises), restoring modified core files from the official WordPress.org release, removing injected .htaccess rules while keeping the WordPress block, rotating the secret keys and salts in wp-config.php (everyone signs in again), and purging the page cache. Removing file-manager plugins and demoting recently created administrators are offered as options and only run when ticked. One click on Approve & run cleanup now records the approval centrally and runs it; a cleanup approved in the central app runs on the next WP-Cron poll.
 
 Every step re-checks its target's content digest immediately before changing it and refuses if the file changed since the plan was reviewed. Changed and removed files are moved into a private quarantine (above the web root when possible) and each run can be restored from this page; a restore keeps anything changed after the cleanup. After the run the plugin rescans and the central app re-checks the site from outside. A failed verification keeps the changes, because rolling back would reinstall the malware, and lists what remains. Quarantined files are deleted permanently only after a verified cleanup and a separate approval. Plugin and theme code is not scanned or edited: reinstall those from their official sources.
+
+== One-click plugin fixes ==
+
+Each installed WordPress.org plugin is compared with the official per-file checksums for its version (cached for six hours); modified files and added PHP files are reported as a finding. "Plugin update available" findings show Fix: update plugin now, and modified plugins show Fix: reinstall plugin now; the central app's Cleanup tab can also update every WordPress.org plugin at once. The current plugin directory is moved into the quarantine, the exact approved version is installed from downloads.wordpress.org with WordPress's own installer, every file is verified against the official checksums, and the home page is loaded; if any check fails, the previous version is put back automatically. Premium plugins that are not on WordPress.org must be updated from their vendor. Updates need WordPress to write plugin files directly (no FTP credentials prompt).
 
 == Limitations ==
 

@@ -332,8 +332,8 @@ function awd_integrity_admins(): array
     return array('count' => count((array) $admins), 'recent' => array_slice($recent, 0, 20));
 }
 
-/** Cached integrity report for this site; $force reruns the scan. */
-function awd_integrity_report(bool $force = false): array
+/** Cached integrity report for this site; $force reruns the scan. $plugins enables WordPress.org plugin checksum checks. */
+function awd_integrity_report(bool $force = false, array $plugins = array()): array
 {
     $cached = get_option(AWD_INTEGRITY_OPTION);
     if (!$force && is_array($cached) && isset($cached['scannedAt']) && strtotime((string) $cached['scannedAt']) > time() - AWD_INTEGRITY_MAX_AGE) {
@@ -352,6 +352,7 @@ function awd_integrity_report(bool $force = false): array
         'version' => (string) get_bloginfo('version'),
         'locale' => function_exists('get_locale') ? (string) get_locale() : 'en_US',
     ));
+    if (function_exists('awd_plugin_integrity_report') && $plugins) $report['pluginIntegrity'] = awd_plugin_integrity_report($plugins, $force);
     update_option(AWD_INTEGRITY_OPTION, $report, false);
     return $report;
 }
@@ -429,6 +430,9 @@ function awd_integrity_issues(array $report): array
             'description' => sprintf('robots.txt in the site root lists %d sitemaps. WordPress generates robots.txt virtually; a physical file listing many numbered sitemaps is typical of SEO-spam injection.', (int) $report['robotsFile']['sitemapEntries']),
             'severity' => 'high',
         );
+    }
+    if (function_exists('awd_plugin_integrity_issues')) {
+        foreach (awd_plugin_integrity_issues((array) ($report['pluginIntegrity'] ?? array())) as $plugin_issue) $issues[] = $plugin_issue;
     }
     $recent_admins = (array) ($report['admins']['recent'] ?? array());
     if ($recent_admins) {

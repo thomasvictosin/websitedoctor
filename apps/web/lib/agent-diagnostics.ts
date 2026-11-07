@@ -33,6 +33,15 @@ export const integrityReportSchema = z.object({
     count: z.number().int().min(0).max(100_000),
     recent: z.array(z.object({ login: z.string().max(60), registeredAt: z.string().datetime({ offset: true }) })).max(20),
   }),
+  pluginIntegrity: z.array(z.object({
+    plugin: z.string().max(200),
+    version: z.string().max(40),
+    status: z.enum(["verified", "modified", "no_checksums", "not_checked"]),
+    modified: z.array(relativePath).max(10),
+    addedPhp: z.array(relativePath).max(10),
+    missing: z.number().int().min(0).max(100_000),
+    checkedAt: z.string().datetime({ offset: true }),
+  })).max(60).optional(),
   fileHashes: z.record(relativePath, z.string().regex(/^[a-f0-9]{64}$/)).refine((value) => Object.keys(value).length <= 150, "Too many file hashes.").optional(),
   truncated: z.boolean(),
 });
@@ -60,6 +69,8 @@ export const agentDiagnosticSchema = z.object({
     file: z.string().max(200),
     active: z.boolean(),
     updateAvailable: z.boolean(),
+    source: z.enum(["wordpress.org", "other"]).optional(),
+    newVersion: z.string().regex(/^[0-9A-Za-z.+-]{1,40}$/).optional(),
   })).max(500),
   editablePages: z.array(z.object({
     id: z.number().int().positive(),

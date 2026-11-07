@@ -21,6 +21,9 @@ export const CLEANUP_OPERATIONS = [
   "rotate_salts",
   "purge_page_cache",
   "purge_quarantine",
+  "update_plugin",
+  "reinstall_plugin",
+  "install_plugin",
 ] as const;
 export type CleanupOperation = typeof CLEANUP_OPERATIONS[number];
 export const MIN_CLEANUP_PLUGIN_VERSION = "0.3.0";
@@ -32,6 +35,9 @@ const RISKY_PLUGIN_SLUGS = ["wp-file-manager", "file-manager-advanced", "fileste
 const sha256 = /^[a-f0-9]{64}$/;
 const relativePath = (value: string) => value.length > 0 && value.length <= 300 && !value.startsWith("/") && !value.includes("\\")
   && !/(^|\/)\.\.?(\/|$)/.test(value) && /^[A-Za-z0-9._@+\- /]+$/.test(value);
+
+const pluginVersion = /^[0-9A-Za-z.+-]{1,40}$/;
+const wordpressOrgPluginFile = (file: string) => /^[a-z0-9][a-z0-9-]{0,99}\/[A-Za-z0-9._-]+\.php$/.test(file) && !file.startsWith("ai-website-doctor/");
 
 export function isAllowedCleanupStep(step: { operation?: unknown; parameters?: unknown }): boolean {
   if (!step || typeof step.operation !== "string" || !step.parameters || typeof step.parameters !== "object" || Array.isArray(step.parameters)) return false;
@@ -49,6 +55,9 @@ export function isAllowedCleanupStep(step: { operation?: unknown; parameters?: u
     case "rotate_salts":
     case "purge_page_cache": return keys === "";
     case "purge_quarantine": return keys === "runId" && /^[a-z0-9-]{8,64}$/.test(p.runId);
+    case "update_plugin": return keys === "expectedVersion,plugin,targetVersion" && wordpressOrgPluginFile(p.plugin) && pluginVersion.test(p.expectedVersion) && pluginVersion.test(p.targetVersion);
+    case "reinstall_plugin": return keys === "expectedVersion,plugin" && wordpressOrgPluginFile(p.plugin) && pluginVersion.test(p.expectedVersion);
+    case "install_plugin": return keys === "activate,slug,version" && /^[a-z0-9][a-z0-9-]{0,99}$/.test(p.slug) && p.slug !== "ai-website-doctor" && pluginVersion.test(p.version) && ["yes", "no"].includes(p.activate);
     default: return false;
   }
 }
@@ -200,8 +209,15 @@ export function buildCleanupPlan(input: {
     });
   }
 
-  const optional: CleanupOptionalItem[] = [];
   const plugins = Array.isArray(diagnostics.plugins) ? diagnostics.plugins.map(record) : [];
+  // WordPress.org plugins whose code differs from the official checksums are reinstalled.
+  const pluginIntegrity = Array.isArray(integrity?.pluginIntegrity) ? integrity!.pluginIntegrity.map(record) : [];
+  for (const result of pluginIntegrity) {
+    if (result.status !== "modified" || typeof result.plugin !== "string" || typeof result.version !== "string") continue;
+    const step = { description: `Reinstall ${result.plugin.split("/")[0]} ${result.version} from WordPress.org: ${[...strings(result.modified), ...strings(result.addedPhp).map((path) => `${path} (added)`)].slice(0, 3).join(", ")} differ from the official release.`, operation: "reinstall_plugin" as const, parameters: { plugin: result.plugin, expectedVersion: result.version } };
+    if (isAllowedCleanupStep(step)) steps.push(step);
+  }
+  const optional: CleanupOptionalItem[] = [];
   for (const plugin of plugins) {
     const file = typeof plugin.file === "string" ? plugin.file : "";
     if (!RISKY_PLUGIN_SLUGS.includes(file.split("/")[0])) continue;
@@ -240,7 +256,7 @@ export function buildCleanupPlan(input: {
     manual.push("The outside check shows the site is compromised, but the integrity scan found no file this cleanup can fix. The injected code is probably inside a plugin or theme: reinstall every plugin and theme from its official source.");
   }
   if (compromised) {
-    manual.push("Reinstall every plugin and theme from its official source and delete the ones you do not use; the integrity scan does not inspect plugin and theme code.");
+    manual.push("Reinstall premium plugins and your theme from their vendors and delete what you do not use: only WordPress.org plugins can be checked against official checksums.");
     manual.push("Change the passwords of every WordPress administrator, your hosting account, SFTP and the database.");
     manual.push("In Google Search Console, review Security issues, resubmit your real sitemap and request removal of the spam URLs.");
     warnings.push("These changes are made on your live site. Every changed or removed file is kept in a private quarantine and the run can be restored from the plugin until you purge it.");
@@ -297,6 +313,51 @@ export async function fetchOfficialChecksums(version: string, locale: string, fe
     } catch {
       // Try the next locale; the plan reports when checksums are unavailable.
     }
+  }
+  return null;
+}
+
+/** Plugin file for a "wp:plugin-update:<hash>" fingerprint (the plugin hashes the file path). */
+export function pluginForUpdateFingerprint(fingerprint: string, plugins: Array<Record<string, unknown>>) {
+  const hash = fingerprint.replace(/^wp:plugin-update:/, "");
+  return plugins.find((plugin) => typeof plugin.file === "string" && createHash("sha256").update(plugin.file).digest("hex").slice(0, 20) === hash) ?? null;
+}
+
+export type FixPlan = { steps: CleanupStep[]; title: string; skipped: string[] };
+
+/** Update steps for WordPress.org plugins with an available update (optionally only the listed files). */
+export function pluginUpdateSteps(diagnostics: unknown, only?: string[]): FixPlan {
+  const plugins = Array.isArray(record(diagnostics).plugins) ? (record(diagnostics).plugins as unknown[]).map(record) : [];
+  const steps: CleanupStep[] = [];
+  const skipped: string[] = [];
+  for (const plugin of plugins) {
+    const file = typeof plugin.file === "string" ? plugin.file : "";
+    if (!plugin.updateAvailable || (only && !only.includes(file))) continue;
+    const name = String(plugin.name ?? file);
+    if (plugin.source !== "wordpress.org") { skipped.push(`${name}: not hosted on WordPress.org (premium or custom); update it from its vendor.`); continue; }
+    if (typeof plugin.newVersion !== "string") { skipped.push(`${name}: the target version is unknown; sync diagnostics again.`); continue; }
+    const step = { description: `Update ${name} ${String(plugin.version)} → ${plugin.newVersion} from WordPress.org.`, operation: "update_plugin" as const, parameters: { plugin: file, expectedVersion: String(plugin.version ?? ""), targetVersion: plugin.newVersion } };
+    if (isAllowedCleanupStep(step)) steps.push(step); else skipped.push(`${name}: its files are not in a standard plugin directory.`);
+  }
+  return { steps, title: steps.length === 1 ? steps[0].description.replace(/ from WordPress\.org\.$/, "") : `Update ${steps.length} plugins`, skipped };
+}
+
+/** The one-click fix for an issue, or null when the finding has no automatic fix. */
+export function fixPlanForIssue(fingerprint: string, diagnostics: unknown): FixPlan | null {
+  const plugins = Array.isArray(record(diagnostics).plugins) ? (record(diagnostics).plugins as unknown[]).map(record) : [];
+  if (fingerprint.startsWith("wp:plugin-update:")) {
+    const plugin = pluginForUpdateFingerprint(fingerprint, plugins);
+    if (!plugin || typeof plugin.file !== "string") return { steps: [], title: "Update plugin", skipped: ["The plugin is no longer in the latest diagnostics; sync again."] };
+    return pluginUpdateSteps(diagnostics, [plugin.file]);
+  }
+  if (fingerprint.startsWith("wp:integrity:plugin-modified:")) {
+    const slug = fingerprint.replace(/^wp:integrity:plugin-modified:/, "");
+    const integrity = record(record(diagnostics).integrity);
+    const result = (Array.isArray(integrity.pluginIntegrity) ? integrity.pluginIntegrity.map(record) : [])
+      .find((item) => typeof item.plugin === "string" && item.plugin.split("/")[0] === slug && item.status === "modified");
+    if (!result) return { steps: [], title: "Reinstall plugin", skipped: ["The latest integrity scan no longer reports this plugin as modified."] };
+    const step = { description: `Reinstall ${slug} ${String(result.version)} from WordPress.org.`, operation: "reinstall_plugin" as const, parameters: { plugin: String(result.plugin), expectedVersion: String(result.version) } };
+    return isAllowedCleanupStep(step) ? { steps: [step], title: step.description.replace(/ from WordPress\.org\.$/, ""), skipped: [] } : { steps: [], title: "Reinstall plugin", skipped: ["The plugin is not in a standard directory."] };
   }
   return null;
 }
