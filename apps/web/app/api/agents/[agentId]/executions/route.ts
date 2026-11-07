@@ -7,12 +7,26 @@ import { reviewRepairOutcome } from "@/lib/ai/orchestrator";
 import { Prisma } from "@prisma/client";
 import { requiresRecoveryPoint, deriveRepairStatus } from "@/lib/repair-policy";
 import { verifyBrowserConflictRepair, verifyBrowserLayoutRepair, verifyBrowserLinkRepair, verifyFatalPluginContainment, verifyRecoveryState, verifyRepairEvidence } from "@/lib/repair-verification";
-import { scanBrowserSite } from "@/lib/browser-monitor";
 import { checkWebsite } from "@/lib/monitor";
 import { requestSourceHash } from "@/lib/rate-limit";
 import { authorizeRepairExecution } from "@/lib/repair-authorization";
 
 export const runtime = "nodejs";
+
+// The browser scanner loads Playwright, which is not available in every
+// deployment (it is not in the Vercel function bundle). A static import made
+// this whole route fail to load, so the plugin could not report any execution.
+// Load it only when a browser rescan is needed; if it is unavailable, return
+// null so verification is recorded as inconclusive, never as success.
+async function runBrowserRetest(url: string) {
+  try {
+    const { scanBrowserSite } = await import("@/lib/browser-monitor");
+    return await scanBrowserSite(url);
+  } catch (error) {
+    console.error("Central browser rescan unavailable", error instanceof Error ? error.message : "Unknown error");
+    return null;
+  }
+}
 
 function repairOperations(proposal: unknown): Array<{ operation: unknown; parameters: unknown }> {
   if (!proposal || typeof proposal !== "object" || Array.isArray(proposal)) return [];
@@ -209,7 +223,7 @@ export async function POST(
   const isLinkRepair = (repair.issue?.fingerprint ?? "").startsWith("browser:link-redirect:")
     || (repair.issue?.fingerprint ?? "").startsWith("browser:broken-link:");
   const browserRetest = (isBrowserConflict || isBrowserLayoutRepair || isLinkRepair) && executionStatus === "completed"
-    ? await scanBrowserSite(repair.website.url)
+    ? await runBrowserRetest(repair.website.url)
     : null;
   const siteAvailabilityCheck = isLinkRepair && executionStatus === "completed"
     ? await checkWebsite(repair.website.url)

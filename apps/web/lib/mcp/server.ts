@@ -3,17 +3,17 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { getDefaultOrganizationId } from "@/lib/ownership";
 import { runAsPrincipal, type RequestPrincipal } from "@/lib/request-principal";
-import { GET as listSitesRoute } from "@/app/api/sites/route";
-import { GET as listIssuesRoute } from "@/app/api/issues/route";
-import { PATCH as updateIssueRoute } from "@/app/api/issues/[issueId]/route";
-import { POST as diagnoseIssueRoute } from "@/app/api/issues/[issueId]/diagnose/route";
-import { GET as recommendRoute } from "@/app/api/issues/[issueId]/recommend/route";
-import { POST as proposeRepairRoute } from "@/app/api/issues/[issueId]/repairs/route";
-import { PATCH as decideRepairRoute } from "@/app/api/repairs/[repairId]/route";
-import { POST as runScanRoute } from "@/app/api/sites/[siteId]/check/route";
-import { GET as scanStatusRoute } from "@/app/api/sites/[siteId]/scans/[scanId]/route";
-import { GET as historyRoute } from "@/app/api/sites/[siteId]/history/route";
-import { GET as repairPolicyRoute } from "@/app/api/sites/[siteId]/repair-authorization/route";
+const listSitesRoute = () => import("@/app/api/sites/route").then((module) => module.GET);
+const listIssuesRoute = () => import("@/app/api/issues/route").then((module) => module.GET);
+const updateIssueRoute = () => import("@/app/api/issues/[issueId]/route").then((module) => module.PATCH);
+const diagnoseIssueRoute = () => import("@/app/api/issues/[issueId]/diagnose/route").then((module) => module.POST);
+const recommendRoute = () => import("@/app/api/issues/[issueId]/recommend/route").then((module) => module.GET);
+const proposeRepairRoute = () => import("@/app/api/issues/[issueId]/repairs/route").then((module) => module.POST);
+const decideRepairRoute = () => import("@/app/api/repairs/[repairId]/route").then((module) => module.PATCH);
+const runScanRoute = () => import("@/app/api/sites/[siteId]/check/route").then((module) => module.POST);
+const scanStatusRoute = () => import("@/app/api/sites/[siteId]/scans/[scanId]/route").then((module) => module.GET);
+const historyRoute = () => import("@/app/api/sites/[siteId]/history/route").then((module) => module.GET);
+const repairPolicyRoute = () => import("@/app/api/sites/[siteId]/repair-authorization/route").then((module) => module.GET);
 
 // The executor must have checked in within this window before the central app
 // will queue a repair (mirrors app/api/repairs/[repairId]/route.ts).
@@ -36,6 +36,10 @@ Recommended workflow:
 5. Only after the user agrees, apply_repair. Then follow get_repair_status until it reaches verified, rolled_back, failed, or rollback_required. Never report a fix as done before status is "verified".`;
 
 type RouteHandler<P> = (request: Request, context: { params: Promise<P> }) => Promise<Response | undefined>;
+// Route handlers are loaded lazily, per tool call: a static import of every
+// route would make one route's heavy dependency (the scan route pulls in
+// Playwright, which is not bundled on Vercel) break the whole MCP endpoint.
+type RouteLoader<P> = () => Promise<RouteHandler<P>>;
 
 type Json = Record<string, unknown>;
 
@@ -59,12 +63,19 @@ export function createWebsiteDoctorMcpServer(principal: RequestPrincipal, origin
   const server = new McpServer({ name: "ai-website-doctor", version: "0.1.0" }, { instructions: INSTRUCTIONS });
 
   /** Invokes an existing route handler as the token's user, so every app safety check applies. */
-  async function callRoute<P extends Record<string, string>>(handler: RouteHandler<P>, path: string, options: { method?: string; body?: unknown; params?: P } = {}) {
+  async function callRoute<P extends Record<string, string>>(load: RouteLoader<P>, path: string, options: { method?: string; body?: unknown; params?: P } = {}) {
     const request = new Request(new URL(path, origin), {
       method: options.method ?? "GET",
       headers: options.body === undefined ? {} : { "content-type": "application/json" },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
+    let handler: RouteHandler<P>;
+    try {
+      handler = await load();
+    } catch (error) {
+      console.error(`MCP route for ${path} could not be loaded`, error instanceof Error ? error.message : "Unknown error");
+      return { ok: false, status: 503, data: { error: "This capability is not available on this deployment (its server module could not be loaded)." } };
+    }
     const response = await runAsPrincipal(principal, () => handler(request, { params: Promise.resolve((options.params ?? {}) as P) }));
     if (!response) return { ok: false, status: 500, data: { error: "The route returned no response." } };
     const raw = await response.text();
