@@ -205,4 +205,42 @@ foreach ($invalid_urls as $url) {
     awd_test_assert(awd_safe_central_url($url) === null, 'unsafe central URL was allowed');
 }
 
+// Integrity scan against an inert compromised fixture tree.
+$compromised_root = __DIR__ . '/fixtures/compromised-wordpress/';
+$fixture_checksums = array(
+    'index.php' => md5('original WordPress index.php'),
+    'wp-includes/version.php' => md5_file($compromised_root . 'wp-includes/version.php'),
+    'wp-admin/about.php' => md5_file($compromised_root . 'wp-admin/about.php'),
+    'wp-load.php' => md5('missing'),
+    'wp-content/index.php' => md5('ignored'),
+);
+$integrity = awd_integrity_scan($compromised_root, $fixture_checksums, array(
+    'themeDirs' => array($compromised_root . 'wp-content/themes/fixture'),
+    'admins' => array('count' => 2, 'recent' => array(array('login' => 'wpsupport', 'registeredAt' => gmdate('c')))),
+));
+awd_test_assert($integrity['status'] === 'complete', 'integrity scan should complete on the fixture tree');
+awd_test_assert($integrity['core']['modified'] === array('index.php'), 'modified core index.php must be detected');
+awd_test_assert($integrity['core']['missing'] === array('wp-load.php'), 'missing core file must be reported');
+awd_test_assert(in_array('wp-includes/class-wp-cache-loader.php', $integrity['core']['unknownPhp'], true), 'unknown PHP in wp-includes must be detected');
+awd_test_assert(!in_array('wp-admin/about.php', $integrity['core']['unknownPhp'], true), 'known core files must not be unknown');
+awd_test_assert($integrity['uploadsPhp'] === array('wp-content/uploads/2026/11/thumb.php'), 'PHP in uploads must be detected; a tiny index.php guard is ignored');
+$suspicious_paths = array_column($integrity['suspiciousFiles'], 'signatures', 'path');
+awd_test_assert(isset($suspicious_paths['index.php']) && in_array('eval_encoded_payload', $suspicious_paths['index.php'], true), 'encoded eval loader must be flagged');
+awd_test_assert(isset($suspicious_paths['wp-includes/class-wp-cache-loader.php']), 'request-called function must be flagged');
+awd_test_assert(isset($suspicious_paths['wp-content/uploads/2026/11/thumb.php']) && in_array('request_code_execution', $suspicious_paths['wp-content/uploads/2026/11/thumb.php'], true), 'uploads web shell must be flagged');
+awd_test_assert(!isset($suspicious_paths['wp-content/themes/fixture/functions.php']), 'a single weak pattern in a theme must not be flagged');
+awd_test_assert(!isset($suspicious_paths['wp-admin/about.php']), 'clean core files must not be flagged');
+$htaccess_reasons = array_column($integrity['htaccess']['suspiciousLines'], 'reason');
+awd_test_assert(in_array('crawler_condition', $htaccess_reasons, true) && in_array('auto_prepend_file', $htaccess_reasons, true), 'injected .htaccess rules must be detected');
+awd_test_assert(count($integrity['htaccess']['suspiciousLines']) === 3, 'WordPress-managed .htaccess rules must not be reported');
+awd_test_assert($integrity['robotsFile']['sitemapEntries'] === 6, 'physical robots.txt sitemaps must be counted');
+awd_test_assert(in_array('sitemap-1.xml', $integrity['rootUnknownFiles'], true), 'unknown root files must be listed');
+$integrity_fingerprints = array_column(awd_integrity_issues($integrity), 'severity', 'fingerprint');
+foreach (array('integrity:malware-signatures' => 'critical', 'integrity:core-modified' => 'critical', 'integrity:htaccess' => 'critical', 'integrity:unknown-core-php' => 'high', 'integrity:uploads-php' => 'high', 'integrity:robots-file' => 'high', 'integrity:recent-admin' => 'medium') as $fingerprint => $severity) {
+    awd_test_assert(($integrity_fingerprints[$fingerprint] ?? null) === $severity, "integrity issue {$fingerprint} must be {$severity}");
+}
+$clean = awd_integrity_scan(__DIR__ . '/fixtures/wordpress/', null);
+awd_test_assert($clean['status'] === 'checksums_unavailable' && awd_integrity_issues($clean) === array(), 'without checksums the scan must not invent core findings');
+awd_test_assert(isset($diagnostics['integrity']['status']), 'diagnostics must include the integrity report');
+
 echo "WordPress plugin tests passed.\n";

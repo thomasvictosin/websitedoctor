@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AI Website Doctor
  * Description: Connects this WordPress site to a locally hosted AI Website Doctor for diagnostics and explicitly approved repairs.
- * Version: 0.1.0
+ * Version: 0.2.0
  * Requires at least: 6.2
  * Requires PHP: 8.0
  * License: GPL-2.0-or-later
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('AWD_VERSION', '0.1.0');
+define('AWD_VERSION', '0.2.0');
 define('AWD_OPTION', 'ai_website_doctor_settings');
 define('AWD_RECOVERY_OPTION', 'ai_website_doctor_recovery_points');
 define('AWD_SYNC_OPTION', 'ai_website_doctor_sync_state');
@@ -21,6 +21,8 @@ define('AWD_MAX_RECOVERY_POINTS', 25);
 define('AWD_FATAL_OPTION', 'ai_website_doctor_fatal_events');
 define('AWD_CRON_HISTORY_OPTION', 'ai_website_doctor_cron_history');
 define('AWD_CONFLICT_REPORT_OPTION', 'ai_website_doctor_staging_conflict_report');
+
+require_once __DIR__ . '/includes/integrity.php';
 
 // Observe task outcomes without invoking or disabling customer callbacks.
 add_action('init', 'awd_register_cron_observers', PHP_INT_MAX);
@@ -693,6 +695,7 @@ function awd_sync_diagnostics(): void
         wp_die(esc_html__('You are not allowed to sync diagnostics.', 'ai-website-doctor'), 403);
     }
     check_admin_referer('awd_sync');
+    $GLOBALS['awd_force_integrity_scan'] = true;
     $result = awd_send_diagnostics();
     if (is_wp_error($result)) {
         awd_redirect($result->get_error_message(), 'error');
@@ -1008,7 +1011,9 @@ function awd_collect_diagnostics(array $settings): array
     $authorized_log_excerpt = !empty($settings['collect_logs']) ? awd_authorized_log_excerpt() : '';
     $php_log_errors = $authorized_log_excerpt !== '' ? awd_parse_php_log_errors($authorized_log_excerpt) : array();
 
-    $issues = array();
+    $integrity = awd_integrity_report(!empty($GLOBALS['awd_force_integrity_scan']));
+    // Compromise findings come first so payload truncation never drops them.
+    $issues = awd_integrity_issues($integrity);
     if (version_compare(PHP_VERSION, '8.0', '<')) {
         $issues[] = array('fingerprint' => 'php-version-low', 'title' => 'PHP version is outdated', 'description' => 'This site runs PHP ' . PHP_VERSION . '. Upgrade to a currently supported PHP release after checking theme and plugin compatibility.', 'severity' => 'high');
     }
@@ -1107,6 +1112,7 @@ function awd_collect_diagnostics(array $settings): array
         'scheduledTasks' => $scheduled_tasks,
         'cronHistory' => $cron_history,
         'conflictTesting' => $conflict_testing,
+        'integrity' => $integrity,
         'issues' => array_slice($issues, 0, 50),
     );
     if ($authorized_log_excerpt !== '') $diagnostics['authorizedLogExcerpt'] = $authorized_log_excerpt;
@@ -1115,6 +1121,10 @@ function awd_collect_diagnostics(array $settings): array
         $diagnostics['plugins'] = array_slice($diagnostics['plugins'], 0, 50);
         $diagnostics['issues'] = array_slice($diagnostics['issues'], 0, 30);
         if (isset($diagnostics['authorizedLogExcerpt'])) $diagnostics['authorizedLogExcerpt'] = substr($diagnostics['authorizedLogExcerpt'], -4000);
+        foreach (array('rootUnknownFiles', 'uploadsPhp', 'muPlugins', 'contentRootPhp', 'suspiciousFiles') as $key) {
+            $diagnostics['integrity'][$key] = array_slice((array) ($diagnostics['integrity'][$key] ?? array()), 0, 20);
+        }
+        $diagnostics['integrity']['truncated'] = true;
     }
     return $diagnostics;
 }
@@ -1208,6 +1218,18 @@ function awd_render_diagnostics(array $diagnostics): void
             <strong>Fatal events:</strong> <?php echo esc_html((string) count($diagnostics['fatalErrors'])); ?> ·
             <strong>PHP log errors:</strong> <?php echo esc_html((string) count($diagnostics['phpErrors'] ?? array())); ?> ·
             <strong>Detected issues:</strong> <?php echo esc_html((string) count($diagnostics['issues'])); ?></p>
+        <?php $integrity = is_array($diagnostics['integrity'] ?? null) ? $diagnostics['integrity'] : array(); ?>
+        <p><strong>Integrity scan:</strong> <?php echo esc_html(sprintf(
+            '%s at %s · %d core files checked · %d modified · %d unknown core PHP · %d PHP in uploads · %d files with malware patterns · %d suspicious .htaccess rules',
+            (string) ($integrity['status'] ?? 'not run'),
+            (string) ($integrity['scannedAt'] ?? '—'),
+            (int) ($integrity['core']['checkedFiles'] ?? 0),
+            count((array) ($integrity['core']['modified'] ?? array())),
+            count((array) ($integrity['core']['unknownPhp'] ?? array())),
+            count((array) ($integrity['uploadsPhp'] ?? array())),
+            count((array) ($integrity['suspiciousFiles'] ?? array())),
+            count((array) ($integrity['htaccess']['suspiciousLines'] ?? array()))
+        )); ?>. Read-only; <em>Collect and sync diagnostics</em> reruns it (otherwise every 6 hours).</p>
         <p><strong>PHP log evidence:</strong> <?php echo esc_html(($diagnostics['phpErrorLog']['status'] ?? 'disabled') . ' · ' . (string) count($diagnostics['phpErrors'] ?? array()) . ' parsed entries, maximum 20'); ?>. Only the explicitly authorized, bounded WordPress debug.log excerpt is inspected; system PHP-FPM/web-server logs are not accessible to this plugin.</p>
         <?php if ($diagnostics['issues']) : ?>
             <ul>

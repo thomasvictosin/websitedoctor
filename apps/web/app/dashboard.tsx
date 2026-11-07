@@ -467,6 +467,25 @@ export default function Home() {
     }
   }
 
+  async function runSecurityCheck(site: Website) {
+    setBusy(`security:${site.id}`);
+    setMessage(`${site.name}: checking what visitors, Googlebot and search visitors receive…`);
+    try {
+      const response = await fetch(`/api/sites/${site.id}/security-check`, { method: "POST" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not run the security check.");
+      await refresh();
+      const findings = Array.isArray(result.findings) ? result.findings as Array<{ title: string; severity: string }> : [];
+      setMessage(findings.length
+        ? `${site.name}: ${findings.length} security finding(s): ${findings.map((finding) => `${finding.severity.toUpperCase()} ${finding.title}`).join("; ")}. See Issues for evidence and cleanup steps.`
+        : `${site.name}: no cloaking, conditional redirect, blank page or sitemap spam observed (${(result.completedChecks ?? []).join(", ") || "no checks completed"}).`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not run the security check.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function runScanWorkflow(site: Website, withAi: boolean) {
     setBusy(`scan:${site.id}`);
     setMessage("");
@@ -1007,6 +1026,9 @@ export default function Home() {
                       <button className="button ghost" onClick={() => runScanWorkflow(site, true)} disabled={busy !== null} title="Collect automated evidence, then ask local AI to analyze findings from that scan.">
                         {busy === `scan:${site.id}` ? "Queueing…" : "Scan + AI"}
                       </button>
+                      <button className="button ghost" onClick={() => runSecurityCheck(site)} disabled={busy !== null} title="Compare what visitors, Googlebot and search visitors receive, and inspect robots.txt and the sitemap for injected spam.">
+                        {busy === `security:${site.id}` ? "Checking…" : "Security check"}
+                      </button>
                       <button className="button ghost" onClick={() => toggleHistory(site)}>
                         {history[site.id] ? "Hide history" : "History"}
                       </button>
@@ -1184,6 +1206,7 @@ export default function Home() {
             onHistory={() => loadHistory(selectedWebsite)}
             onUpdate={(updates) => updateWebsite(selectedWebsite, updates)}
             onScan={(withAi) => runScanWorkflow(selectedWebsite, withAi)}
+            onSecurityCheck={() => runSecurityCheck(selectedWebsite)}
             scanStatus={scanProgress[selectedWebsite.id] ?? null}
             websites={websites}
           />
@@ -1580,6 +1603,7 @@ function WebsiteDetail({
   onHistory,
   onUpdate,
   onScan,
+  onSecurityCheck,
   scanStatus,
 }: {
   site: Website;
@@ -1592,6 +1616,7 @@ function WebsiteDetail({
   onHistory: () => void;
   onUpdate: (updates: Partial<Pick<Website, "monitoringEnabled" | "intervalMinutes" | "environmentType" | "relatedWebsiteId">>) => void;
   onScan: (withAi: boolean) => void;
+  onSecurityCheck: () => void;
   scanStatus: { scanId: string; status: string; withAi: boolean } | null;
 }) {
   const check = site.checks[0] ?? null;
@@ -1724,6 +1749,7 @@ function WebsiteDetail({
     <div className="site-actions">
       <button className="button secondary" onClick={() => onScan(false)} disabled={busy !== null}>{busy === `scan:${site.id}` ? "Queueing…" : "Scan only"}</button>
       <button className="button ghost" onClick={() => onScan(true)} disabled={busy !== null}>{busy === `scan:${site.id}` ? "Queueing…" : "Scan + AI"}</button>
+      <button className="button ghost" onClick={onSecurityCheck} disabled={busy !== null}>{busy === `security:${site.id}` ? "Checking…" : "Security check"}</button>
     </div>
     {scanStatus && <p className="diagnostic-limit">Latest scan: {scanStatus.status.replaceAll("_", " ")} · {scanStatus.withAi ? "AI analysis selected" : "automated evidence only"}</p>}
       <p>Automated scans collect HTTP availability, bounded same-origin Playwright browser evidence, broken-link checks, responsive observations, resource-performance signals, and axe-core accessibility findings. Link checks inspect at most 1,000 candidates and probe at most 200 unvisited same-origin targets. Performance flags use lab-sample thresholds: load over 5 seconds, LCP over 2.5 seconds, CLS over 0.1, resources over 1 MB or 3 seconds, and more than 100 resources on a page. “Scan only” stops after evidence collection. “Scan + AI” then analyzes up to ten active findings from that scan with the configured local model. WordPress/PHP errors, plugin inventory, and scheduled-task evidence come from the connected plugin; debug.log parsing requires the plugin’s explicit opt-in and is limited to a 16 KB read, 12 KB excerpt, and 20 structured PHP errors.</p>

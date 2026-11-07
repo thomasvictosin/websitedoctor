@@ -1,5 +1,41 @@
 import { z } from "zod";
 
+const relativePath = z.string().max(300);
+const pathList = z.array(relativePath).max(50);
+
+export const integrityReportSchema = z.object({
+  scannedAt: z.string().datetime({ offset: true }),
+  status: z.enum(["complete", "partial", "checksums_unavailable"]),
+  durationMs: z.number().int().min(0).max(600_000),
+  core: z.object({
+    checksumsAvailable: z.boolean(),
+    checkedFiles: z.number().int().min(0).max(100_000),
+    modified: pathList,
+    missing: pathList,
+    unknownPhp: pathList,
+  }),
+  rootUnknownFiles: pathList,
+  uploadsPhp: pathList,
+  muPlugins: pathList,
+  contentRootPhp: pathList,
+  suspiciousFiles: z.array(z.object({ path: relativePath, signatures: z.array(z.string().max(60)).max(20) })).max(50),
+  htaccess: z.object({
+    present: z.boolean(),
+    bytes: z.number().int().min(0).optional(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
+    hasWordPressBlock: z.boolean().optional(),
+    suspiciousLines: z.array(z.object({ line: z.number().int().min(1), reason: z.string().max(60), text: z.string().max(200) })).max(10).optional(),
+  }),
+  robotsFile: z.object({ present: z.boolean(), bytes: z.number().int().min(0).optional(), sitemapEntries: z.number().int().min(0).optional() }),
+  admins: z.object({
+    count: z.number().int().min(0).max(100_000),
+    recent: z.array(z.object({ login: z.string().max(60), registeredAt: z.string().datetime({ offset: true }) })).max(20),
+  }),
+  truncated: z.boolean(),
+});
+
+export type IntegrityReport = z.infer<typeof integrityReportSchema>;
+
 export const agentDiagnosticSchema = z.object({
   collectedAt: z.string().datetime({ offset: true }),
   site: z.object({
@@ -77,6 +113,7 @@ export const agentDiagnosticSchema = z.object({
       context.addIssue({ code: z.ZodIssueCode.custom, message: "Completed staging tests require a timestamp." });
     }
   }).optional(),
+  integrity: integrityReportSchema.optional(),
   settings: z.object({
     blogname: z.string().max(500),
     blogdescription: z.string().max(2000),

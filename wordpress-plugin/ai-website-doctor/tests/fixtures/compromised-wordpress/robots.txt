@@ -1,0 +1,7 @@
+User-agent: *
+Sitemap: https://fixture.example/sitemap-1.xml
+Sitemap: https://fixture.example/sitemap-2.xml
+Sitemap: https://fixture.example/sitemap-3.xml
+Sitemap: https://fixture.example/sitemap-4.xml
+Sitemap: https://fixture.example/sitemap-5.xml
+Sitemap: https://fixture.example/sitemap-6.xml

@@ -1,17 +1,101 @@
 import { db } from "./db.ts";
 import type { Prisma } from "@prisma/client";
-import { browserPageKey, scanBrowserSite } from "./browser-monitor.ts";
+import type { scanBrowserSite } from "./browser-monitor.ts";
 import { checkWebsite } from "./monitor.ts";
 import { proposeStandingEligibleRepair } from "./repair-authorization.ts";
+import { runSecurityProbe, type SecurityProbeResult } from "./security-probe.ts";
+
+type BrowserScanner = typeof scanBrowserSite;
+
+// Playwright is not part of the serverless (Vercel) bundle. Load the browser
+// scanner only when a scan needs it, so availability and security checks keep
+// working where no browser runtime exists.
+async function loadBrowserScanner(): Promise<BrowserScanner | null> {
+  try {
+    return (await import("./browser-monitor.ts")).scanBrowserSite;
+  } catch (error) {
+    console.error("Browser scanner unavailable:", error instanceof Error ? error.message : "unknown error");
+    return null;
+  }
+}
+
+/**
+ * Store the probe's findings as issues and resolve earlier security findings
+ * that a completed check no longer observes. A check that failed to fetch its
+ * evidence never resolves its findings.
+ */
+export async function storeSecurityProbe(websiteId: string, scanSessionId: string, probe: SecurityProbeResult) {
+  const checkedAt = new Date(probe.checkedAt);
+  const diagnostic = await db.diagnosticResult.create({
+    data: {
+      scanSessionId,
+      category: "security",
+      status: probe.findings.length ? "failed" : probe.completedChecks.length ? "passed" : "inconclusive",
+      summary: {
+        url: probe.url,
+        checkedAt: probe.checkedAt,
+        completedChecks: probe.completedChecks,
+        findingCount: probe.findings.length,
+        samples: probe.samples,
+        robots: probe.robots,
+        sitemap: probe.sitemap,
+        errors: probe.errors,
+        limitations: probe.limitations,
+      } as Prisma.InputJsonValue,
+    },
+  });
+  const issueIds: string[] = [];
+  for (const finding of probe.findings) {
+    const evidence = { security: { checkedAt: probe.checkedAt, url: probe.url, check: finding.check, ...finding.evidence, limitations: probe.limitations }, collectedAt: probe.checkedAt };
+    const issue = await db.issue.upsert({
+      where: { websiteId_fingerprint: { websiteId, fingerprint: finding.fingerprint } },
+      create: { websiteId, fingerprint: finding.fingerprint, title: finding.title, description: finding.description, severity: finding.severity, source: "security_probe", evidence: evidence as Prisma.InputJsonValue },
+      update: { title: finding.title, description: finding.description, severity: finding.severity, source: "security_probe", status: "open", lastSeenAt: checkedAt, resolvedAt: null, evidence: evidence as Prisma.InputJsonValue },
+      select: { id: true },
+    });
+    issueIds.push(issue.id);
+    await db.evidenceRecord.create({
+      data: { diagnosticResultId: diagnostic.id, issueId: issue.id, kind: finding.fingerprint, source: "security_probe", payload: evidence as Prisma.InputJsonValue, collectedAt: checkedAt },
+    });
+    await proposeStandingEligibleRepair(websiteId, issue.id);
+  }
+  const observed = new Set(probe.findings.map((finding) => finding.fingerprint));
+  const open = await db.issue.findMany({
+    where: { websiteId, source: "security_probe", status: { in: ["open", "acknowledged"] } },
+    select: { id: true, fingerprint: true, evidence: true },
+  });
+  const resolvedIds = open.filter((issue) => {
+    if (observed.has(issue.fingerprint)) return false;
+    const check = (issue.evidence as { security?: { check?: string } } | null)?.security?.check;
+    return typeof check === "string" && probe.completedChecks.includes(check as never);
+  }).map((issue) => issue.id);
+  if (resolvedIds.length) {
+    await db.issue.updateMany({ where: { id: { in: resolvedIds }, websiteId }, data: { status: "resolved", resolvedAt: checkedAt, lastSeenAt: checkedAt } });
+  }
+  return { diagnosticId: diagnostic.id, issueIds, resolvedCount: resolvedIds.length };
+}
+
+/** Run only the plain-HTTP security probe and store it (works without a browser runtime). */
+export async function runAndStoreSecurityCheck(website: { id: string; url: string }, initiatedBy = "manual", probe: typeof runSecurityProbe = runSecurityProbe) {
+  const session = await db.scanSession.create({ data: { websiteId: website.id, scanType: "security", initiatedBy } });
+  try {
+    const result = await probe(website.url);
+    const stored = await storeSecurityProbe(website.id, session.id, result);
+    await db.scanSession.update({ where: { id: session.id }, data: { status: "completed", completedAt: new Date() } });
+    return { scanSessionId: session.id, probe: result, ...stored };
+  } catch (error) {
+    await db.scanSession.update({ where: { id: session.id }, data: { status: "failed", completedAt: new Date() } });
+    throw error;
+  }
+}
 
 export async function runAndStoreCheck(
   website: { id: string; name: string; url: string },
   initiatedBy = "manual",
-  dependencies: { checkWebsite?: typeof checkWebsite; scanBrowserSite?: typeof scanBrowserSite } = {},
+  dependencies: { checkWebsite?: typeof checkWebsite; scanBrowserSite?: BrowserScanner; runSecurityProbe?: typeof runSecurityProbe } = {},
   sessionId?: string,
 ) {
   const checkSite: typeof checkWebsite = dependencies.checkWebsite ?? checkWebsite;
-  const scanSite: typeof scanBrowserSite = dependencies.scanBrowserSite ?? scanBrowserSite;
   const session = sessionId ? { id: sessionId } : await db.scanSession.create({
     data: { websiteId: website.id, scanType: "availability_and_browser", initiatedBy },
   });
@@ -22,8 +106,23 @@ export async function runAndStoreCheck(
       data: { websiteId: website.id, scanSessionId: session.id, ...result, checkedAt },
     });
 
-    let browser: Awaited<ReturnType<typeof scanBrowserSite>> | null = null;
+    let browser: Awaited<ReturnType<BrowserScanner>> | null = null;
+    let security: SecurityProbeResult | null = null;
     if (result.available) {
+      try {
+        security = await (dependencies.runSecurityProbe ?? runSecurityProbe)(website.url);
+        await storeSecurityProbe(website.id, session.id, security);
+      } catch (error) {
+        console.error(`Security probe failed for ${website.id}:`, error instanceof Error ? error.message : "unknown error");
+      }
+    }
+    const scanSite = result.available ? dependencies.scanBrowserSite ?? await loadBrowserScanner() : null;
+    if (result.available && !scanSite) {
+      await db.diagnosticResult.create({
+        data: { scanSessionId: session.id, category: "browser", status: "unavailable", summary: { reason: "The browser runtime is not available on this deployment; availability and security checks still ran." } },
+      });
+    }
+    if (result.available && scanSite) {
       browser = await scanSite(website.url);
       const browserDiagnostic = await db.diagnosticResult.create({
         data: {
@@ -187,7 +286,7 @@ export async function runAndStoreCheck(
       where: { id: session.id },
       data: { status: "completed", completedAt: checkedAt },
     });
-    return { ...check, browser };
+    return { ...check, browser, security };
   } catch (error) {
     await db.scanSession.update({
       where: { id: session.id },

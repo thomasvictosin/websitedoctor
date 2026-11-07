@@ -85,6 +85,7 @@ export async function POST(
         : {}),
       ...(issue.fingerprint.startsWith("php-fatal:") ? { fatalErrors: parsed.data.fatalErrors ?? [], plugins: parsed.data.plugins.slice(0, 100) } : {}),
       ...(issue.fingerprint.startsWith("php-log:") ? { phpErrors: parsed.data.phpErrors ?? [], phpErrorLog: parsed.data.phpErrorLog ?? null } : {}),
+      ...(issue.fingerprint.startsWith("integrity:") ? { integrity: parsed.data.integrity ?? null } : {}),
       ...(issue.fingerprint.startsWith("cron-failed:") ? { failedTasks: (parsed.data.cronHistory ?? []).filter((task) => task.status === "failed") } : {}),
       ...( /plugin|theme|conflict/i.test(`${issue.fingerprint} ${issue.title} ${issue.description}`)
         ? { conflictTesting: parsed.data.conflictTesting ?? null }

@@ -73,6 +73,30 @@ Payload:
 
 Fields and array counts are bounded and validated by the app. `phpErrors` contains at most 20 parsed warning, notice, deprecation, fatal, parse, or uncaught-exception records from the same excerpt. `phpErrorLog.status` is `disabled`, `readable`, `not_found`, `unreadable`, `empty`, or `unavailable`; an unavailable log is not evidence that PHP is healthy. Log collection is opt-in in the plugin, reads only a 16 KiB tail of `wp-content/debug.log`, sends at most 12 KiB of redacted excerpt, and may still contain sensitive data. The plugin also records PHP fatal errors observed at shutdown independently of log opt-in. It cannot access host PHP-FPM, web-server, or rotated logs. The central app stores diagnostics and creates/updates WordPress issues.
 
+### Integrity report (plugin 0.2.0+)
+
+Diagnostics may include an `integrity` object, produced by a read-only scan that the plugin caches for six hours and reruns on a manual sync:
+
+```json
+"integrity": {
+  "scannedAt": "2026-11-07T15:35:28+00:00",
+  "status": "complete",
+  "durationMs": 1840,
+  "core": { "checksumsAvailable": true, "checkedFiles": 3140, "modified": ["index.php"], "missing": [], "unknownPhp": ["wp-includes/class-wp-cache-loader.php"] },
+  "rootUnknownFiles": ["sitemap-1.xml"],
+  "uploadsPhp": ["wp-content/uploads/2026/11/thumb.php"],
+  "muPlugins": [],
+  "contentRootPhp": [],
+  "suspiciousFiles": [{ "path": "index.php", "signatures": ["eval_encoded_payload", "crawler_cloaking"] }],
+  "htaccess": { "present": true, "bytes": 512, "sha256": "<64 hex>", "hasWordPressBlock": true, "suspiciousLines": [{ "line": 2, "reason": "crawler_condition", "text": "RewriteCond %{HTTP_USER_AGENT} (google|bing) [NC]" }] },
+  "robotsFile": { "present": true, "bytes": 1035, "sitemapEntries": 21 },
+  "admins": { "count": 2, "recent": [{ "login": "wpsupport", "registeredAt": "2026-11-01T09:00:00+00:00" }] },
+  "truncated": false
+}
+```
+
+Core files are compared with the WordPress.org checksums for the installed version and locale (`status` is `checksums_unavailable` when they cannot be fetched, and no core findings are produced). Paths are relative to the WordPress root, lists hold at most 50 entries, and file contents are never sent: `suspiciousFiles` reports only signature names. A file is listed for one strong signature (encoded `eval`, request input executed or called as a function, request-driven file writes, `preg_replace /e`, remote includes) or for two weak ones (crawler or referrer checks, long encoded blobs, hex-escaped code, string-built function names). `.htaccess` lines inside the `# BEGIN/END WordPress` block are not reported. The plugin derives `integrity:*` issues from this report and places them first in `issues`, so payload truncation never drops them; the central app attaches the report to each `integrity:*` issue as evidence. A clean report means the bounded scan found nothing, not that the site is proven clean.
+
 ## Plugin dashboard and shared repair decisions
 
 `GET /api/agents/{agentId}/dashboard` returns the connected website's latest synchronized diagnostics, latest WordPress scan, central HTTP availability result, and WordPress issue records with their central AI diagnosis, repair proposals, approval/execution state, and lifecycle events. It is read-only and scoped to the authenticated agent's website. The plugin may cache this response for display during temporary central-service outages.

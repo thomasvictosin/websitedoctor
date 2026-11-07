@@ -12,6 +12,7 @@ const proposeRepairRoute = () => import("@/app/api/issues/[issueId]/repairs/rout
 const decideRepairRoute = () => import("@/app/api/repairs/[repairId]/route").then((module) => module.PATCH);
 const runScanRoute = () => import("@/app/api/sites/[siteId]/check/route").then((module) => module.POST);
 const scanStatusRoute = () => import("@/app/api/sites/[siteId]/scans/[scanId]/route").then((module) => module.GET);
+const securityCheckRoute = () => import("@/app/api/sites/[siteId]/security-check/route").then((module) => module.POST);
 const historyRoute = () => import("@/app/api/sites/[siteId]/history/route").then((module) => module.GET);
 const repairPolicyRoute = () => import("@/app/api/sites/[siteId]/repair-authorization/route").then((module) => module.GET);
 
@@ -24,12 +25,14 @@ const INSTRUCTIONS = `AI Website Doctor: diagnose and repair the WordPress websi
 
 How the system works:
 - The central app stores websites, availability checks, issues, evidence, diagnoses, and repair proposals.
-- Each website's WordPress plugin syncs diagnostics (plugins, theme, PHP errors, WP-Cron, settings, detected issues) to the central app about every 5 minutes. get_wordpress_diagnostics returns that data and how fresh it is.
+- Each website's WordPress plugin syncs diagnostics (plugins, theme, PHP errors, WP-Cron, settings, detected issues) to the central app about every 5 minutes. get_wordpress_diagnostics returns that data and how fresh it is. Plugin 0.2.0+ also sends an "integrity" report: core files that differ from WordPress.org checksums, unknown PHP files in core directories and uploads, malware code-pattern matches, injected .htaccess rules, a physical robots.txt, and recently created administrators.
+- run_security_check fetches the site as a browser, as Googlebot, and as a visitor from Google search, and inspects robots.txt and the sitemap. It detects cloaking (crawlers get a different page), search-referrer redirects, blank 200 pages, and injected spam sitemaps, which an availability check reports as "up". It runs immediately and works on every deployment.
+- A compromised site's own plugin can be tampered with; prefer run_security_check evidence (gathered from outside the site) when judging whether a cleanup worked.
 - You cannot connect to WordPress directly. Repairs reach the plugin only through the central app: propose_repair creates an evidence-backed proposal, and apply_repair approves and queues it. The plugin executes it on its next poll (WP-Cron, traffic-triggered, typically within 5 minutes), records an operation-specific recovery point first, and the central app verifies the result and rolls back on failure.
 - Only allowlisted operations can execute: disable_plugin, switch_theme, update_setting (blogname/blogdescription), replace_post_link, add_scoped_css_rule (staging only). Everything else gets manual guidance. You cannot run code, SQL, shell, or edit files.
 
 Recommended workflow:
-1. list_websites, then list_issues for the site.
+1. list_websites, then list_issues for the site. When asked about a site's health or security, also run_security_check: a 200 response does not mean the site is healthy.
 2. get_issue and get_wordpress_diagnostics to read the evidence. Reason from the recorded evidence only; say when evidence is missing.
 3. Optionally diagnose_issue (deterministic rules) and get_recommendation.
 4. propose_repair. If the proposal has no executable operation, give the user its manual guidance instead.
@@ -283,6 +286,16 @@ export function createWebsiteDoctorMcpServer(principal: RequestPrincipal, origin
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, async ({ siteId }) => {
     const result = await callRoute(runScanRoute, `/api/sites/${encodeURIComponent(siteId)}/check`, { method: "POST", params: { siteId } });
+    return result.ok ? text(result.data) : failure(result);
+  });
+
+  tool("run_security_check", {
+    title: "Run a compromise (security) check now",
+    description: "Fetch the website as a regular browser, as Googlebot, and as a visitor arriving from Google search, then inspect robots.txt and the sitemap. Detects cloaking (search engines shown different content), conditional redirects, blank 200 home pages, and machine-generated spam sitemaps. Findings are stored as issues (source security_probe) and earlier ones are resolved when no longer observed. Runs synchronously (about 10–30 seconds); needs no background worker or browser runtime.",
+    inputSchema: { siteId: z.string().min(1).max(64) },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async ({ siteId }) => {
+    const result = await callRoute(securityCheckRoute, `/api/sites/${encodeURIComponent(siteId)}/security-check`, { method: "POST", params: { siteId } });
     return result.ok ? text(result.data) : failure(result);
   });
 

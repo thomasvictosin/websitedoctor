@@ -16,7 +16,8 @@ work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 mkdir -p "$work_dir/ai-website-doctor"
 cp "$plugin_dir/ai-website-doctor.php" "$plugin_dir/readme.txt" "$work_dir/ai-website-doctor/"
-mkdir -p "$work_dir/ai-website-doctor/bin"
+mkdir -p "$work_dir/ai-website-doctor/bin" "$work_dir/ai-website-doctor/includes"
+cp "$plugin_dir/includes/"*.php "$work_dir/ai-website-doctor/includes/"
 cp "$plugin_dir/bin/staging-conflict-check.php" "$work_dir/ai-website-doctor/bin/"
 (
   cd "$work_dir"

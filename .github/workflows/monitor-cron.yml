@@ -1,0 +1,30 @@
+name: Scheduled website monitoring
+
+# Vercel Hobby crons run at most once a day, so this workflow drives the
+# app's monitoring endpoint every 15 minutes. Configure repository secrets
+# MONITOR_URL (e.g. https://websitedoctor.vercel.app) and CRON_SECRET (the
+# same value as the app's CRON_SECRET environment variable).
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Run due website checks
+        env:
+          MONITOR_URL: ${{ secrets.MONITOR_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$MONITOR_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "MONITOR_URL and CRON_SECRET secrets are not configured; skipping."
+            exit 0
+          fi
+          curl --fail-with-body --silent --show-error --max-time 90 \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "${MONITOR_URL%/}/api/cron/monitor"
