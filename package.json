@@ -1,0 +1,22 @@
+{
+  "name": "ai-website-doctor-monorepo",
+  "private": true,
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace apps/web",
+    "build": "npm run build --workspace apps/web",
+    "start": "npm run start --workspace apps/web",
+    "typecheck": "npm run typecheck --workspace apps/web",
+    "test:web": "npm run test --workspace apps/web",
+    "test:repair-db": "npm run test:repair-db --workspace apps/web",
+    "test:e2e:wordpress": "npm run test:e2e:wordpress --workspace apps/web",
+    "clean:root-next": "node -e \"require('node:fs').rmSync('.next', { recursive: true, force: true })\"",
+    "db:generate": "npm run db:generate --workspace apps/web",
+    "db:push": "npm run db:push --workspace apps/web",
+    "plugin:lint": "php -l wordpress-plugin/ai-website-doctor/ai-website-doctor.php",
+    "plugin:test": "php wordpress-plugin/ai-website-doctor/tests/allowlist.php",
+    "plugin:package": "bash wordpress-plugin/ai-website-doctor/bin/package.sh"
+  }
+}

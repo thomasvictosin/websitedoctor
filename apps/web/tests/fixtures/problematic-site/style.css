@@ -1,0 +1,7 @@
+body { margin: 0; background: #fff; color: #999; }
+.too-wide { width: 1100px; min-height: 120px; background: #eee; }
+.low-contrast { color: #aaa; background: #fff; }
+@media (max-width: 600px) {
+  #mobile-nav { display: none; }
+  #menu-toggle { display: block; }
+}

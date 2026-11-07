@@ -1,0 +1,42 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+
+# Node.js and Next.js
+node_modules/
+.next/
+out/
+dist/
+coverage/
+playwright-report/
+test-results/
+npm-debug.log*
+*.log
+*.tsbuildinfo
+.vercel/
+.turbo/
+.cache/
+
+# Local data and generated packages
+*.zip
+*.sqlite
+*.db
+*.sql
+*.dump
+*.backup
+backups/
+wordpress-plugin/ai-website-doctor/vendor/
+wordpress-plugin/ai-website-doctor/.phpunit.cache/
+wordpress-plugin/ai-website-doctor/dist/
+
+# Operating system / editor
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json

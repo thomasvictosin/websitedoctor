@@ -1,0 +1,3 @@
+[03-Nov-2026 10:00:00 UTC] PHP Fatal error: Call to undefined function fixture_plugin_boot() in /plugins/fixture-conflict/plugin.php
+[03-Nov-2026 10:00:00 UTC] PHP Warning: Undefined array key "settings" in /plugins/fixture-conflict/plugin.php on line 42
+[03-Nov-2026 10:00:01 UTC] password=fixture-secret

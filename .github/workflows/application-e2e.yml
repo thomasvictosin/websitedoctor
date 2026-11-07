@@ -1,0 +1,45 @@
+name: Application and WordPress E2E
+
+on:
+  push:
+    paths:
+      - "apps/web/**"
+      - "wordpress-plugin/ai-website-doctor/**"
+      - "docker-compose.e2e.yml"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/application-e2e.yml"
+  pull_request:
+    paths:
+      - "apps/web/**"
+      - "wordpress-plugin/ai-website-doctor/**"
+      - "docker-compose.e2e.yml"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/application-e2e.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  application-and-wordpress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test:web
+      - run: npm run plugin:lint && npm run plugin:test
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Run isolated WordPress end-to-end workflow
+        run: npm run test:e2e:wordpress

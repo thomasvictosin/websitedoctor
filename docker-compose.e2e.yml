@@ -1,0 +1,77 @@
+services:
+  app-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: website_doctor_e2e
+      POSTGRES_USER: doctor
+      POSTGRES_PASSWORD: e2e-only-password
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U doctor -d website_doctor_e2e"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  wp-db:
+    image: mariadb:11.4
+    environment:
+      MARIADB_DATABASE: wordpress_e2e
+      MARIADB_USER: wordpress
+      MARIADB_PASSWORD: wordpress-e2e-password
+      MARIADB_ROOT_PASSWORD: root-e2e-password
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  wordpress:
+    image: wordpress:6.8-php8.2-apache
+    depends_on:
+      wp-db:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: wp-db:3306
+      WORDPRESS_DB_NAME: wordpress_e2e
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: wordpress-e2e-password
+      WORDPRESS_CONFIG_EXTRA: |
+        define('WP_ENVIRONMENT_TYPE', 'staging');
+        define('AIWD_DISPOSABLE_STAGING', true);
+    networks:
+      default:
+        aliases:
+          - fixture.example
+    ports:
+      - "127.0.0.1:8081:80"
+    volumes:
+      - wordpress_files:/var/www/html
+      - ./wordpress-plugin/ai-website-doctor:/var/www/html/wp-content/plugins/ai-website-doctor:ro
+      - ./wordpress-plugin/ai-website-doctor/tests/fixtures/e2e/repair-target-a:/var/www/html/wp-content/plugins/repair-target-a:ro
+      - ./wordpress-plugin/ai-website-doctor/tests/fixtures/e2e/repair-target-b:/var/www/html/wp-content/plugins/repair-target-b:ro
+
+  wpcli:
+    image: wordpress:cli-php8.2
+    depends_on:
+      wp-db:
+        condition: service_healthy
+      wordpress:
+        condition: service_started
+    environment:
+      WORDPRESS_DB_HOST: wp-db:3306
+      WORDPRESS_DB_NAME: wordpress_e2e
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: wordpress-e2e-password
+    volumes:
+      - wordpress_files:/var/www/html
+      - ./wordpress-plugin/ai-website-doctor:/var/www/html/wp-content/plugins/ai-website-doctor:ro
+      - ./wordpress-plugin/ai-website-doctor/tests/fixtures/e2e/repair-target-a:/var/www/html/wp-content/plugins/repair-target-a:ro
+      - ./wordpress-plugin/ai-website-doctor/tests/fixtures/e2e/repair-target-b:/var/www/html/wp-content/plugins/repair-target-b:ro
+      - ./apps/web/scripts/e2e-wordpress-execute.php:/opt/aiwd/e2e-wordpress-execute.php:ro
+      - ./apps/web/scripts/e2e-wordpress-rollback.php:/opt/aiwd/e2e-wordpress-rollback.php:ro
+    entrypoint: ["sh", "-c"]
+    command: ["sleep infinity"]
+
+volumes:
+  wordpress_files:

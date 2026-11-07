@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Intentionally broken diagnostic fixture</title>
+    <link rel="stylesheet" href="./style.css">
+  </head>
+  <body>
+    <header><button id="menu-toggle" type="button" aria-controls="mobile-nav" aria-expanded="false">Menu</button><nav id="mobile-nav"><a href="#content">Home</a><a href="/secondary">Details</a><a href="/search?query=not-crawled">Search</a><a href="https://other.example/offsite">Offsite</a></nav></header>
+    <main id="content">
+      <div class="too-wide">This block is deliberately wider than the mobile viewport.</div>
+      <p class="low-contrast">This text has deliberately poor contrast.</p>
+      <img src="/missing-image.png">
+      <form><input type="email" placeholder="Email address"><button>Submit</button></form>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

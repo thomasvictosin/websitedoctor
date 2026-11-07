@@ -1,0 +1,65 @@
+name: WordPress plugin
+
+on:
+  push:
+    paths:
+      - "wordpress-plugin/ai-website-doctor/**"
+      - ".github/workflows/wordpress-plugin.yml"
+    tags:
+      - "wordpress-plugin-v*"
+  pull_request:
+    paths:
+      - "wordpress-plugin/ai-website-doctor/**"
+      - ".github/workflows/wordpress-plugin.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+
+jobs:
+  plugin-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+          tools: composer:v2
+      - name: Validate standalone plugin manifest
+        working-directory: wordpress-plugin/ai-website-doctor
+        run: composer validate --no-check-publish
+      - name: Install plugin development dependencies
+        working-directory: wordpress-plugin/ai-website-doctor
+        run: composer install --no-interaction --no-progress
+      - name: Lint plugin
+        working-directory: wordpress-plugin/ai-website-doctor
+        run: composer lint
+      - name: Run plugin tests
+        working-directory: wordpress-plugin/ai-website-doctor
+        run: composer test
+
+  plugin-release:
+    if: startsWith(github.ref, 'refs/tags/wordpress-plugin-v')
+    needs: plugin-checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag matches plugin version
+        working-directory: wordpress-plugin/ai-website-doctor
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="$(php -r '$manifest = json_decode(file_get_contents("composer.json"), true); echo $manifest["version"];')"
+          test "$RELEASE_TAG" = "wordpress-plugin-v$VERSION"
+      - name: Package WordPress plugin
+        run: bash wordpress-plugin/ai-website-doctor/bin/package.sh "$RUNNER_TEMP"
+      - name: Publish plugin-only GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${RELEASE_TAG#wordpress-plugin-v}"
+          gh release create "$RELEASE_TAG" "$RUNNER_TEMP/ai-website-doctor-$VERSION.zip" \
+            --title "AI Website Doctor WordPress Plugin $VERSION" \
+            --notes "Standalone WordPress plugin release. Install the ZIP from the WordPress Plugins page."

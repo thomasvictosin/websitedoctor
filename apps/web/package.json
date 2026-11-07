@@ -1,0 +1,40 @@
+{
+  "name": "ai-website-doctor",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --hostname 127.0.0.1",
+    "build": "next build",
+    "start": "next start --hostname 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test:repair-db": "node --experimental-strip-types scripts/repair-db-tests.mjs",
+    "browser:install": "playwright install chromium",
+    "browser:staging-probe": "node --experimental-strip-types scripts/staging-browser-probe.mjs",
+    "test:e2e:wordpress": "node --experimental-strip-types scripts/e2e-wordpress.mjs",
+    "auth:hash-password": "node scripts/hash-admin-password.mjs",
+    "db:generate": "prisma generate",
+    "db:push": "node prisma/bootstrap-owner.mjs && prisma db push && node prisma/migrate-installation-credentials.mjs"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "^7.10.1",
+    "@prisma/client": "^7.10.1",
+    "axe-core": "^4.14.0",
+    "dotenv": "^18.0.9",
+    "ipaddr.js": "^2.2.0",
+    "next": "^16.4.4",
+    "playwright": "^1.64.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "ssh2": "^1.17.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/ssh2": "^1.15.6",
+    "prisma": "^7.10.1",
+    "typescript": "^5.8.3"
+  }
+}

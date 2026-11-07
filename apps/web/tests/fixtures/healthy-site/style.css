@@ -1,0 +1,5 @@
+* { box-sizing: border-box; }
+body { margin: 0 auto; max-width: 68rem; padding: 1rem; color: #172033; background: #fff; font: 16px/1.5 sans-serif; }
+header, nav, form { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+img { display: block; width: 4rem; height: 4rem; }
+input, button { min-height: 2.75rem; }

@@ -1,0 +1,618 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id                    String               @id @default(cuid())
+  email                 String               @unique
+  name                  String
+  role                  String               @default("admin")
+  passwordHash          String?
+  disabledAt            DateTime?
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  memberships           OrganizationMember[]
+  createdWebsites       Website[]            @relation("WebsiteCreator")
+  auditEvents           AuditLog[]           @relation("AuditActor")
+  notifications         Notification[]
+  repairApprovals       RepairApproval[]
+  repairPermissions     RepairPermission[]
+  repairAuthorizations  RepairAuthorization[]
+  googleDriveConnections GoogleDriveConnection[]
+  googleDriveOAuthStates GoogleDriveOAuthState[]
+  hostingConnections    HostingConnection[]  @relation("HostingConnectionOwner")
+  hostingCredentials    HostingCredential[]  @relation("HostingCredentialOwner")
+}
+
+model Organization {
+  id            String               @id @default(cuid())
+  name          String
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  members       OrganizationMember[]
+  websites      Website[]
+  settings      SystemSetting[]
+  auditLogs     AuditLog[]
+  notifications Notification[]
+  jobs          BackgroundJob[]
+  googleDriveConnection GoogleDriveConnection?
+  googleDriveOAuthStates GoogleDriveOAuthState[]
+  googleDriveSiteFolders GoogleDriveSiteFolder[]
+}
+
+model OrganizationMember {
+  organizationId String
+  userId         String
+  role           String       @default("member")
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([organizationId, userId])
+  @@index([userId, role])
+}
+
+model Website {
+  id                  String               @id @default(cuid())
+  ownerId             String               @default("local-admin")
+  organizationId      String               @default("local-organization")
+  owner               User                 @relation("WebsiteCreator", fields: [ownerId], references: [id], onDelete: Restrict)
+  organization        Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  name                String
+  url                 String
+  environmentType     String               @default("production")
+  relatedWebsiteId    String?
+  relatedWebsite      Website?             @relation("WebsiteEnvironments", fields: [relatedWebsiteId], references: [id], onDelete: SetNull)
+  relatedWebsites     Website[]            @relation("WebsiteEnvironments")
+  monitoringEnabled   Boolean              @default(false)
+  intervalMinutes     Int                  @default(60)
+  nextCheckAt         DateTime?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  checks              SiteCheck[]
+  scanSessions        ScanSession[]
+  issues              Issue[]
+  repairProposals     RepairProposal[]
+  wordpressAgent      WordPressAgent?
+  agentPairings       AgentPairing[]
+  backups             Backup[]
+  backgroundJobs      BackgroundJob[]
+  hostingConnections  HostingConnection[]
+  googleDriveSiteFolder GoogleDriveSiteFolder?
+  repairAuthorization RepairAuthorization?
+  repairPermissions   RepairPermission[]
+
+  @@index([organizationId, createdAt])
+  @@index([ownerId, createdAt])
+  @@index([createdAt])
+}
+
+model HostingConnection {
+  id                    String                @id @default(cuid())
+  websiteId             String
+  website               Website               @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  ownerId               String
+  owner                 User                  @relation("HostingConnectionOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  provider              String               @default("generic")
+  environmentType       String?
+  connectionMethod      String
+  hostname              String
+  port                  Int?
+  username              String?
+  authMethod            String               @default("key")
+  credentialId          String?
+  credential            HostingCredential?   @relation(fields: [credentialId], references: [id], onDelete: SetNull)
+  documentRoot          String?
+  status                String               @default("disconnected")
+  lastSuccessfulConnection DateTime?
+  lastConnectionTest    DateTime?
+  discoveredCapabilities Json?
+  connectionMetadata    Json?
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  capabilities          HostingCapability[]
+  tests                 HostingConnectionTest[]
+
+  @@index([websiteId, ownerId, status])
+  @@index([ownerId, connectionMethod])
+}
+
+model HostingCredential {
+  id            String              @id @default(cuid())
+  ownerId       String
+  owner         User                @relation("HostingCredentialOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  name          String
+  kind          String
+  encryptedValue String
+  keyFingerprint String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  connections   HostingConnection[]
+
+  @@index([ownerId, kind])
+}
+
+model HostingCapability {
+  id             String           @id @default(cuid())
+  connectionId   String
+  connection     HostingConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  capability     String
+  supported      Boolean          @default(false)
+  details        Json?
+  discoveredAt   DateTime         @default(now())
+  createdAt      DateTime         @default(now())
+
+  @@unique([connectionId, capability])
+  @@index([connectionId, capability])
+}
+
+model HostingConnectionTest {
+  id             String           @id @default(cuid())
+  connectionId   String
+  connection     HostingConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  success        Boolean
+  statusCode     Int?
+  error          String?
+  details        Json?
+  createdAt      DateTime         @default(now())
+
+  @@index([connectionId, createdAt])
+}
+
+model Issue {
+  id                String             @id @default(cuid())
+  websiteId         String
+  website           Website            @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  fingerprint       String
+  title             String
+  description       String
+  severity          String             @default("medium")
+  status            String             @default("open")
+  source            String
+  confidence        Float?
+  evidence          Json?
+  diagnosis         Json?
+  toolIds           String[]           @default([])
+  firstSeenAt       DateTime           @default(now())
+  lastSeenAt        DateTime           @default(now())
+  resolvedAt        DateTime?
+  repairs           RepairProposal[]
+  diagnosticResults DiagnosticResult[]
+  evidenceRecords   EvidenceRecord[]
+  diagnoses         AiDiagnosis[]
+
+  @@unique([websiteId, fingerprint])
+  @@index([status, severity])
+  @@index([websiteId, lastSeenAt])
+}
+
+model RepairProposal {
+  id                  String               @id @default(cuid())
+  websiteId           String
+  website             Website              @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  issueId             String?
+  issue               Issue?               @relation(fields: [issueId], references: [id], onDelete: SetNull)
+  status              String               @default("pending_approval")
+  risk                String
+  initiatingInterface String               @default("dashboard")
+  operationIds        String[]             @default([])
+  requiredPermissions String[]             @default(["manage_options"])
+  approvalStatus      String               @default("pending")
+  backupStatus        String               @default("not_started")
+  executionStatus     String               @default("not_started")
+  verificationStatus  String               @default("not_started")
+  rollbackStatus      String               @default("not_requested")
+  proposal            Json
+  createdAt           DateTime             @default(now())
+  approvedAt          DateTime?
+  approvedBy          String?
+  executions          AgentExecution[]
+  events              RepairEvent[]
+  approvals           RepairApproval[]
+  backups             Backup[]
+  verificationResults VerificationResult[]
+
+  @@index([websiteId, createdAt])
+  @@index([status])
+}
+
+model RepairAuthorization {
+  id                   String            @id @default(cuid())
+  ownerId              String
+  owner                User              @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  websiteId            String            @unique
+  website              Website           @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  mode                 String            @default("manual")
+  maxRisk              String            @default("low")
+  requireRecoveryPoint Boolean           @default(true)
+  requireVerification  Boolean           @default(true)
+  maxRepairsPerBatch   Int               @default(10)
+  pausedAt             DateTime?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+  permissions          RepairPermission[]
+
+  @@index([ownerId, mode])
+}
+
+model RepairPermission {
+  id                    String             @id @default(cuid())
+  authorizationId       String
+  authorization         RepairAuthorization @relation(fields: [authorizationId], references: [id], onDelete: Cascade)
+  ownerId               String
+  owner                 User               @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  websiteId             String
+  website               Website            @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  operation             String
+  authorizationMode     String             @default("approval")
+  enabled               Boolean            @default(false)
+  maxRisk               String             @default("low")
+  requiredSafetyConditions Json?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  @@unique([websiteId, operation])
+  @@index([ownerId, websiteId, enabled])
+}
+
+model RepairEvent {
+  id        String         @id @default(cuid())
+  repairId  String
+  repair    RepairProposal @relation(fields: [repairId], references: [id], onDelete: Cascade)
+  eventType String
+  actor     String
+  details   Json?
+  createdAt DateTime       @default(now())
+
+  @@index([repairId, createdAt])
+}
+
+model AgentPairing {
+  id         String    @id @default(cuid())
+  websiteId  String
+  website    Website   @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([websiteId, expiresAt])
+}
+
+model WordPressAgent {
+  id               String                   @id @default(cuid())
+  websiteId        String                   @unique
+  website          Website                  @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  siteUrl          String
+  siteName         String
+  wpVersion        String?
+  phpVersion       String?
+  pluginVersion    String
+  legacySecretHash String?                  @map("secretHash")
+  diagnostics      Json?
+  lastSeenAt       DateTime                 @default(now())
+  revokedAt        DateTime?
+  createdAt        DateTime                 @default(now())
+  executions       AgentExecution[]
+  backups          Backup[]
+  requestNonces    AgentRequestNonce[]
+  credentials      InstallationCredential[]
+
+  @@index([lastSeenAt])
+}
+
+model InstallationCredential {
+  id         String         @id @default(cuid())
+  agentId    String
+  agent      WordPressAgent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  tokenHash  String         @unique
+  createdAt  DateTime       @default(now())
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+
+  @@index([agentId, revokedAt])
+}
+
+model AgentExecution {
+  id            String               @id @default(cuid())
+  agentId       String
+  agent         WordPressAgent       @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  repairId      String
+  repair        RepairProposal       @relation(fields: [repairId], references: [id], onDelete: Cascade)
+  status        String
+  result        Json?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime             @default(now())
+  verifications VerificationResult[]
+
+  @@unique([agentId, repairId])
+  @@index([agentId, status])
+}
+
+model SiteCheck {
+  id            String       @id @default(cuid())
+  websiteId     String
+  website       Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  scanSessionId String?
+  scanSession   ScanSession? @relation(fields: [scanSessionId], references: [id], onDelete: SetNull)
+  checkedAt     DateTime     @default(now())
+  available     Boolean
+  statusCode    Int?
+  responseTime  Int?
+  error         String?
+
+  @@index([websiteId, checkedAt])
+}
+
+model ScanSession {
+  id          String             @id @default(cuid())
+  websiteId   String
+  website     Website            @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  scanType    String
+  status      String             @default("running")
+  initiatedBy String             @default("scheduler")
+  jobId       String?            @unique
+  job         BackgroundJob?     @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  startedAt   DateTime           @default(now())
+  completedAt DateTime?
+  checks      SiteCheck[]
+  results     DiagnosticResult[]
+
+  @@index([websiteId, startedAt])
+  @@index([status, startedAt])
+}
+
+model DiagnosticResult {
+  id            String           @id @default(cuid())
+  scanSessionId String
+  scanSession   ScanSession      @relation(fields: [scanSessionId], references: [id], onDelete: Cascade)
+  issueId       String?
+  issue         Issue?           @relation(fields: [issueId], references: [id], onDelete: SetNull)
+  category      String
+  status        String
+  summary       Json?
+  createdAt     DateTime         @default(now())
+  evidence      EvidenceRecord[]
+
+  @@index([scanSessionId, createdAt])
+  @@index([issueId, createdAt])
+}
+
+model EvidenceRecord {
+  id                 String            @id @default(cuid())
+  diagnosticResultId String?
+  diagnosticResult   DiagnosticResult? @relation(fields: [diagnosticResultId], references: [id], onDelete: Cascade)
+  issueId            String?
+  issue              Issue?            @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  kind               String
+  source             String
+  sensitivity        String            @default("normal")
+  payload            Json
+  collectedAt        DateTime          @default(now())
+
+  @@index([issueId, collectedAt])
+  @@index([diagnosticResultId, collectedAt])
+}
+
+model AiDiagnosis {
+  id        String   @id @default(cuid())
+  issueId   String
+  issue     Issue    @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  provider  String
+  model     String?
+  status    String
+  result    Json?
+  error     String?
+  createdAt DateTime @default(now())
+
+  @@index([issueId, createdAt])
+}
+
+model RepairApproval {
+  id          String         @id @default(cuid())
+  repairId    String
+  repair      RepairProposal @relation(fields: [repairId], references: [id], onDelete: Cascade)
+  actorUserId String?
+  actorUser   User?          @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  decision    String
+  comment     String?
+  authorizationMethod String?
+  authorizationScope  Json?
+  operationDigest     String?
+  expiresAt           DateTime?
+  consumedAt          DateTime?
+  batchId             String?
+  executionResult     String?
+  executionWebsiteId  String?
+  executionIssueId    String?
+  executionProposalId String?
+  createdAt   DateTime       @default(now())
+
+  @@index([repairId, createdAt])
+  @@index([repairId, operationDigest, expiresAt, consumedAt])
+}
+
+model Backup {
+  id         String          @id @default(cuid())
+  websiteId  String
+  website    Website         @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  repairId   String?
+  repair     RepairProposal? @relation(fields: [repairId], references: [id], onDelete: SetNull)
+  agentId    String?
+  agent      WordPressAgent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  externalId String?
+  storageProvider String?
+  storageFileId String?
+  storageFolderId String?
+  sha256     String?
+  restoreStatus String @default("not_requested")
+  restoreRequestedAt DateTime?
+  restoreRequestedBy String?
+  restoreCompletedAt DateTime?
+  restoreResult Json?
+  backupType String
+  status     String
+  metadata   Json?
+  createdAt  DateTime        @default(now())
+
+  @@index([websiteId, createdAt])
+  @@index([repairId, createdAt])
+  @@index([websiteId, status, createdAt])
+  @@unique([repairId, externalId])
+}
+
+model GoogleDriveConnection {
+  id                    String               @id @default(cuid())
+  organizationId        String               @unique
+  organization          Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  connectedByUserId     String
+  connectedBy           User                 @relation(fields: [connectedByUserId], references: [id], onDelete: Restrict)
+  accountEmail          String
+  encryptedRefreshToken String
+  rootFolderId          String
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+
+  @@index([connectedByUserId])
+}
+
+model GoogleDriveOAuthState {
+  id             String       @id @default(cuid())
+  stateHash      String       @unique
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt      DateTime
+  createdAt      DateTime     @default(now())
+
+  @@index([expiresAt])
+}
+
+model GoogleDriveSiteFolder {
+  id             String               @id @default(cuid())
+  organizationId String
+  organization   Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  websiteId      String               @unique
+  website        Website              @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  driveFolderId  String
+  createdAt      DateTime             @default(now())
+
+  @@index([organizationId])
+}
+
+model VerificationResult {
+  id          String          @id @default(cuid())
+  repairId    String
+  repair      RepairProposal  @relation(fields: [repairId], references: [id], onDelete: Cascade)
+  executionId String?
+  execution   AgentExecution? @relation(fields: [executionId], references: [id], onDelete: SetNull)
+  status      String
+  method      String
+  result      Json?
+  createdAt   DateTime        @default(now())
+
+  @@index([repairId, createdAt])
+}
+
+model Notification {
+  id             String       @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String?
+  user           User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category       String
+  title          String
+  body           String
+  readAt         DateTime?
+  createdAt      DateTime     @default(now())
+
+  @@index([organizationId, createdAt])
+  @@index([userId, readAt])
+}
+
+model AuditLog {
+  id             String        @id @default(cuid())
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  actorUserId    String?
+  actorUser      User?         @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  actorType      String
+  actorId        String?
+  action         String
+  resourceType   String?
+  resourceId     String?
+  sourceHash     String?
+  details        Json?
+  createdAt      DateTime      @default(now())
+
+  @@index([organizationId, createdAt])
+  @@index([actorType, actorId, createdAt])
+  @@index([resourceType, resourceId, createdAt])
+}
+
+model BackgroundJob {
+  id             String        @id @default(cuid())
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  jobType        String
+  status         String        @default("pending")
+  payload        Json
+  attempts       Int           @default(0)
+  maxAttempts    Int           @default(3)
+  lockedAt       DateTime?
+  lockExpiresAt  DateTime?
+  lastError      String?
+  websiteId      String?
+  website        Website?      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  scanSession    ScanSession?
+  idempotencyKey String?       @unique
+  runAt          DateTime      @default(now())
+  completedAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([status, runAt])
+  @@index([organizationId, createdAt])
+  @@index([websiteId, jobType, status])
+}
+
+model SystemSetting {
+  id             String        @id @default(cuid())
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  scope          String        @default("global")
+  scopeId        String        @default("system")
+  key            String
+  value          Json
+  isSecret       Boolean       @default(false)
+  updatedAt      DateTime      @updatedAt
+
+  @@unique([organizationId, scope, scopeId, key])
+  @@index([organizationId, scope])
+}
+
+model RateLimitBucket {
+  key       String   @id
+  count     Int
+  resetAt   DateTime
+  updatedAt DateTime @updatedAt
+
+  @@index([resetAt])
+}
+
+model AgentRequestNonce {
+  agentId   String
+  nonce     String
+  createdAt DateTime       @default(now())
+  agent     WordPressAgent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, nonce])
+  @@index([createdAt])
+}

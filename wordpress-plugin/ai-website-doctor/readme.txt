@@ -1,0 +1,46 @@
+=== AI Website Doctor ===
+Contributors: ai-website-doctor
+Tags: diagnostics, monitoring, wordpress
+Requires at least: 6.2
+Requires PHP: 8.0
+Stable tag: 0.1.0
+License: GPL-2.0-or-later
+
+Connects a WordPress site to a locally hosted AI Website Doctor app for authorized diagnostics and explicitly approved, allowlisted repairs.
+
+== Installation ==
+
+1. Copy the ai-website-doctor directory into wp-content/plugins/.
+2. Activate AI Website Doctor in the WordPress Plugins screen.
+3. Open Website Doctor in the WordPress administration menu.
+4. Enter the central application URL and save settings.
+5. In the central app, create a one-time pairing code for the matching registered website.
+6. Enter the code in the plugin and connect.
+
+This plugin is maintained and released independently from the Next.js project in the AI Website Doctor monorepo. Its API contract is documented in contracts/wordpress-agent-api.md at the repository root. The plugin itself has no runtime dependency on Node.js, Next.js, or the central app's PHP files.
+
+The pairing code expires after ten minutes and can be used once. Central app and WordPress site origins must match. HTTPS is required for remote connections; plain HTTP is allowed only for a loopback central app used for local development.
+
+== Diagnostics and privacy ==
+
+Diagnostics inspect WordPress/PHP versions, active theme and plugins, available plugin updates, WP-Cron configuration, structured PHP fatal events, and scheduled-task outcomes. Overdue task state is reported independently from a failed callback. Uncaught fatal errors are observed automatically. A scheduled callback that catches an exception or detects an application-level failure should call `awd_report_scheduled_task_failure('Safe summary', 'error_code')` before returning, so the failure is recorded without exposing private data. Callbacks that do not report failures can only be recorded as completed when they return normally; WordPress has no universal callback return convention. The diagnostic collector does not execute overdue tasks. Fatal evidence is bounded and redacted, and debug.log excerpts remain a separate opt-in.
+
+Live scans never deactivate plugins or switch themes. For conflict probes, create a disposable WordPress staging clone with WP-CLI and explicitly set both `WP_ENVIRONMENT_TYPE=staging` and `AIWD_DISPOSABLE_STAGING=true` in wp-config.php (`define('AIWD_DISPOSABLE_STAGING', true);`). Install the central app's Playwright dependencies and Chromium on the probe host, then set `AIWD_BROWSER_PROBE_SCRIPT` to the absolute path of `apps/web/scripts/staging-browser-probe.mjs`. Run `AIWD_DISPOSABLE_STAGING=true wp eval-file wp-content/plugins/ai-website-doctor/bin/staging-conflict-check.php`. The command refuses to run unless both staging markers are present, uses the central browser monitor's URL safety checks, request/page/depth/time limits, viewports, console errors, failed requests, and layout/accessibility observations, restores the original active plugins/theme, and stores a bounded report for the next sync. It checks up to 15 active plugins individually, five alternate themes, and plugin/theme combinations for the first two active plugins. Unrun combinations are not claimed as tested. Findings compare fingerprints between baseline and probe states; `no_conflict` means no difference was observed by this bounded browser scan.
+
+Sending a debug.log excerpt is disabled by default and requires an administrator to enable the explicit log-collection setting. Excerpts are limited and common credential-shaped strings are redacted, but logs can still contain private information. Review the log and understand what may be shared before enabling the option.
+
+The plugin sends requests outbound to the configured central app. It does not expose an inbound WordPress control endpoint or run its own AI model. The central application owns diagnosis, risk/severity decisions, proposals, review, and rollback recommendations. Its bearer token is stored in a non-autoloaded WordPress option and should be treated as a credential. Disconnecting revokes the token centrally before removing it locally.
+
+The dashboard displays central issue records, central AI diagnoses, repair approvals, and repair lifecycle history shared with the custom application. Administrators can request central analysis and a repair proposal, inspect the proposed operation details, approve/reject the shared proposal, and explicitly apply eligible repairs. A central **Approve & apply** request is delivered to this plugin on its next authenticated WP-Cron poll (traffic-triggered, so low-traffic sites may be delayed); **Approve & apply now** in the plugin executes immediately. Cloud AI analysis is unavailable when the central service or its configured model cannot be reached; the plugin has no local AI model.
+
+During temporary central-service outages, the plugin retains the latest bounded diagnostic snapshot locally and retries it on the next manual or scheduled sync. Older snapshots are replaced to avoid sending stale observations out of order. Cached central issue and repair information is labeled as potentially stale while disconnected. No repair action is queued or run offline.
+
+== Repairs ==
+
+The plugin lists only repair proposals approved in the central app and accepted by the plugin's operation allowlist. A local WordPress administrator must explicitly click the apply action. Supported operations are disabling a site-level plugin, switching to an installed theme, updating the blog name or description with an expected current value, replacing one exact internal link in a published editable post or page, and applying a narrowly scoped responsive-width fix on a staging site. The CSS repair is available only when `WP_ENVIRONMENT_TYPE` is `staging`, the browser scan identifies one unique overflowing element and the matching page is an editable published post/page. It appends only `max-width: 100%` for that page-scoped ID/class selector to the active theme's Additional CSS; it does not guess margins or padding and is rejected outside staging. A complete CSS before/after record is saved before the change, and the central app must confirm the original overflow is gone in a browser rescan. Permanent redirects use the verified same-origin final destination. For confirmed 404/410 links, the administrator supplies one replacement URL, which the central app verifies as same-origin and reachable before creating the proposal. The link operation does not rewrite menus, templates, shortcodes, external links, or missing anchors. Cache flush is not executable because its prior state cannot be restored.
+
+For an executable proposal, **Approve & apply now** records central approval and executes the allowlisted operation with one local administrator action. Before changing anything, the plugin stores an operation-specific undo record containing the exact target and its previous value or content. If the record is incomplete, or the target no longer has its recorded before-value, execution stops without applying the change. Verification failure restores only the recorded target and only when it still matches the expected after-value; newer edits or unrelated settings are preserved. For post-link replacement, the undo record contains the exact post content and hashes, and restoration is refused if the post has changed since the repair. The central app independently verifies submitted post-repair evidence; a successful command alone is never considered a successful repair. Operation-specific records are limited to the latest 25 and are not full database or filesystem backups. Existing site backup routines remain the broader recovery option; the app does not require a new full-site backup confirmation for each repair.
+
+== Limitations ==
+
+WP-Cron polling runs every five minutes only when WordPress traffic triggers WP-Cron. It is not guaranteed execution on low-traffic sites. A repair explicitly approved and queued from the central app runs on the next poll; plugin users can also start eligible repairs immediately. The plugin cannot repair an inaccessible WordPress server; the independent central HTTP monitor can still detect website availability. The app does not claim that it can repair an offline server.

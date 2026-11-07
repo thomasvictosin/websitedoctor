@@ -1,0 +1,17 @@
+{
+  "name": "ai-website-doctor/wordpress-plugin",
+  "description": "Standalone WordPress diagnostics and approved repair agent",
+  "type": "wordpress-plugin",
+  "version": "0.1.0",
+  "require": {
+    "php": ">=8.0"
+  },
+  "scripts": {
+    "lint": "@php -l ai-website-doctor.php",
+    "test": "@php tests/allowlist.php",
+    "package": "bash bin/package.sh"
+  },
+  "config": {
+    "sort-packages": true
+  }
+}
