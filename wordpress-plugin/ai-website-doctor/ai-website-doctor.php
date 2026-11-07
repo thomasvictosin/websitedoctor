@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AI Website Doctor
  * Description: Connects this WordPress site to a locally hosted AI Website Doctor for diagnostics and explicitly approved repairs.
- * Version: 0.3.0
+ * Version: 0.3.1
  * Requires at least: 6.2
  * Requires PHP: 8.0
  * License: GPL-2.0-or-later
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('AWD_VERSION', '0.3.0');
+define('AWD_VERSION', '0.3.1');
 define('AWD_OPTION', 'ai_website_doctor_settings');
 define('AWD_RECOVERY_OPTION', 'ai_website_doctor_recovery_points');
 define('AWD_SYNC_OPTION', 'ai_website_doctor_sync_state');
@@ -616,7 +616,8 @@ function awd_central_request(string $url, string $method, array $payload, string
         'reject_unsafe_urls' => true,
         'sslverify' => true,
         'headers' => array('Content-Type' => 'application/json', 'Accept' => 'application/json'),
-        'limit_response_size' => 100000,
+        // Generous ceiling: a truncated body fails to parse and would look like an outage.
+        'limit_response_size' => 1048576,
     );
     if (in_array($method, array('POST', 'PUT', 'PATCH'), true)) {
         $body = wp_json_encode($payload);
