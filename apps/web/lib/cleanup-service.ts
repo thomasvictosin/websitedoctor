@@ -85,13 +85,13 @@ export async function startCleanup(input: {
   const operationIds = [...new Set(steps.map((step) => step.operation))];
   const approvedBy = input.actor.kind === "standing" ? `standing-policy:${input.actor.interface ?? "automatic"}` : input.actor.kind === "wordpress_admin" ? "wordpress-admin" : input.actor.userId ?? "local-admin";
 
-  return db.$transaction(async (tx) => {
+  const created = await db.$transaction(async (tx) => {
     await tx.$queryRaw`WITH advisory_lock AS MATERIALIZED (SELECT pg_advisory_xact_lock(hashtext(${input.websiteId}))) SELECT 1 FROM advisory_lock`;
     const active = await tx.repairProposal.findFirst({
       where: { websiteId: input.websiteId, status: { in: ACTIVE_STATUSES }, createdAt: { gte: new Date(Date.now() - GRANT_TTL_MS) }, proposal: { path: ["kind"], equals: CLEANUP_KIND } },
-      select: { id: true },
+      select: { id: true, proposal: true },
     });
-    if (active) throw new CleanupError(`Cleanup ${active.id} is already queued or running for this website.`, 409);
+    if (active) throw new CleanupError(`The site is still working on “${String(record(active.proposal).issue ?? "another change")}”. It handles one change at a time; try again when that finishes (usually within seconds).`, 409);
     const now = new Date();
     const repair = await tx.repairProposal.create({
       data: {
@@ -154,6 +154,21 @@ export async function startCleanup(input: {
     });
     return { repairId: repair.id, grantId: grant.id, expiresAt: grant.expiresAt!, steps };
   });
+  // The plugin's own approvals run immediately; everything else wakes the site instead of waiting for WP-Cron.
+  if (input.actor.kind !== "wordpress_admin") await wakeSite(input.websiteId);
+  return created;
+}
+
+/** Ask the plugin (0.6.1+) to check in now. Best effort: failure just means the next WP-Cron poll picks it up. */
+export async function wakeSite(websiteId: string) {
+  const website = await db.website.findUnique({ where: { id: websiteId }, select: { url: true } });
+  if (!website) return false;
+  try {
+    const response = await fetch(new URL("/wp-json/ai-website-doctor/v1/wake", website.url), { method: "POST", headers: { "user-agent": "AI-Website-Doctor/1.0 (wake)" }, redirect: "follow", signal: AbortSignal.timeout(6_000) });
+    return response.status === 202;
+  } catch {
+    return false;
+  }
 }
 
 /** Claim approved cleanup runs for the agent; each grant can be dispatched exactly once. */
@@ -205,7 +220,7 @@ export async function dispatchCleanupTasks(agentId: string, websiteId: string, o
 }
 
 export const cleanupReportSchema = z.object({
-  event: z.enum(["executed", "restored"]),
+  event: z.enum(["executed", "restored", "purged"]),
   repairId: z.string().min(1).max(64),
   authorizationGrantId: z.string().min(1).max(64).optional(),
   runId: z.string().regex(/^[a-z0-9-]{8,64}$/),
@@ -227,6 +242,11 @@ export async function recordCleanupReport(agent: { id: string; websiteId: string
   const proposal = record(repair.proposal);
   const cleanup = record(proposal.cleanup);
 
+  if (report.event === "purged") {
+    await db.repairProposal.update({ where: { id: repair.id }, data: { proposal: { ...proposal, cleanup: { ...cleanup, purgedAt: report.completedAt } } as Prisma.InputJsonValue } });
+    await db.repairEvent.create({ data: { repairId: repair.id, eventType: "quarantine_purged", actor: "wordpress-admin", details: { runId: report.runId } } });
+    return { status: "purged" };
+  }
   if (report.event === "restored") {
     const restored = report.steps.filter((step) => step.status === "restored").length;
     const kept = report.steps.filter((step) => step.status !== "restored").length;
@@ -305,10 +325,28 @@ export async function startQuarantinePurge(input: { websiteId: string; organizat
   const repair = await db.repairProposal.findFirst({ where: { id: input.repairId, websiteId: input.websiteId }, select: { status: true, proposal: true } });
   if (!repair || !isCleanupProposal(repair.proposal)) throw new CleanupError("Cleanup run not found.", 404);
   const runId = record(record(record(repair.proposal).cleanup).execution).runId;
-  if (repair.status !== "verified" || typeof runId !== "string") throw new CleanupError("Only a verified cleanup's quarantine can be purged; restore or re-run unverified cleanups first.", 409);
+  if (typeof runId !== "string") throw new CleanupError("This run has not reported a quarantine yet.", 409);
+  if (repair.status === "rolled_back") throw new CleanupError("This run was restored; its quarantine is already back on the site.", 409);
+  if (record(record(repair.proposal).cleanup).purgedAt) throw new CleanupError("This run's quarantine was already deleted.", 409);
+  if (!["verified", "failed"].includes(repair.status)) throw new CleanupError("Wait until the run has finished before deleting its quarantine.", 409);
   return startCleanup({
     websiteId: input.websiteId, organizationId: input.organizationId, planDigest: "purge", include: [], actor: input.actor,
-    explicit: { title: "Permanently delete quarantined files", relatedRepairId: input.repairId, steps: [{ description: "Permanently delete the files quarantined by the verified cleanup. After this the cleanup can no longer be restored.", operation: "purge_quarantine", parameters: { runId } }] },
+    explicit: { title: "Permanently delete quarantined files", relatedRepairId: input.repairId, mode: "maintenance", steps: [{ description: "Permanently delete the files this run quarantined. After this it can no longer be restored.", operation: "purge_quarantine", parameters: { runId } }] },
+  });
+}
+
+/** Put a finished run's quarantined files and changes back on the site. */
+export async function startRunRestore(input: { websiteId: string; organizationId: string; repairId: string; actor: CleanupActor }) {
+  const repair = await db.repairProposal.findFirst({ where: { id: input.repairId, websiteId: input.websiteId }, select: { status: true, proposal: true } });
+  if (!repair || !isCleanupProposal(repair.proposal)) throw new CleanupError("Run not found.", 404);
+  const cleanup = record(record(repair.proposal).cleanup);
+  const runId = record(cleanup.execution).runId;
+  if (typeof runId !== "string") throw new CleanupError("This run has not reported a quarantine yet.", 409);
+  if (repair.status === "rolled_back") throw new CleanupError("This run was already restored.", 409);
+  if (cleanup.purgedAt) throw new CleanupError("This run's quarantine was permanently deleted; it can no longer be restored.", 409);
+  return startCleanup({
+    websiteId: input.websiteId, organizationId: input.organizationId, planDigest: "restore", include: [], actor: input.actor,
+    explicit: { title: "Restore an earlier run", relatedRepairId: input.repairId, mode: "maintenance", steps: [{ description: "Put back everything the earlier run changed or quarantined, except targets that changed since.", operation: "restore_run", parameters: { runId } }] },
   });
 }
 
@@ -349,6 +387,20 @@ async function recordMaintenanceReport(
   });
   await db.verificationResult.create({ data: { repairId: repair.id, executionId: agentExecution.id, status: verificationStatus, method: "checksums_site_health_and_availability", result: execution.verification as Prisma.InputJsonValue } });
   await db.repairEvent.create({ data: { repairId: repair.id, eventType: `maintenance_${verificationStatus}`, actor: "central", details: { applied: applied.length, failed: failed.length, reasons: reasons.slice(0, 10) } } });
+  for (const step of report.steps.filter((item) => item.status === "applied" && (item.operation === "restore_run" || item.operation === "purge_quarantine"))) {
+    const runId = (record(cleanup).steps as Array<{ operation: string; parameters: Record<string, string> }> | undefined)?.[step.index]?.parameters?.runId;
+    if (!runId) continue;
+    const original = await db.repairProposal.findFirst({ where: { websiteId: agent.websiteId, proposal: { path: ["cleanup", "execution", "runId"], equals: runId } }, select: { id: true, proposal: true } });
+    if (!original) continue;
+    const originalProposal = record(original.proposal);
+    const originalCleanup = record(originalProposal.cleanup);
+    await db.repairProposal.update({
+      where: { id: original.id },
+      data: step.operation === "restore_run"
+        ? { status: "rolled_back", rollbackStatus: "completed", proposal: { ...originalProposal, cleanup: { ...originalCleanup, restore: { at: report.completedAt, viaRepairId: repair.id } } } as Prisma.InputJsonValue }
+        : { proposal: { ...originalProposal, cleanup: { ...originalCleanup, purgedAt: report.completedAt } } as Prisma.InputJsonValue },
+    });
+  }
   if (verificationStatus !== "verified") await notifySite(agent.websiteId, "maintenance", `Update ${verificationStatus}`, `${applied.length} change(s) applied, ${failed.length} failed:\n${reasons.slice(0, 10).map((reason) => `- ${reason}`).join("\n")}`);
   return { status, verificationStatus, applied: applied.length, failed: failed.length, notAttempted: notAttempted.length, reasons };
 }

@@ -28,7 +28,29 @@ export async function GET(request: Request, { params }: { params: Promise<{ site
   const diagnostics = (owned.website.wordpressAgent?.diagnostics ?? {}) as { hardening?: Array<{ id: string; enabled: boolean; verified: boolean | null; detail: string; changedAt: string | null }>; site?: { pluginVersion?: string } };
   const reported = new Map((diagnostics.hardening ?? []).map((measure) => [measure.id, measure]));
   const measures = RECOMMENDED.map((id) => ({ id, title: PROTECTION_MEASURE_TITLES[id], enabled: reported.get(id)?.enabled ?? false, verified: reported.get(id)?.verified ?? null, detail: reported.get(id)?.detail ?? "", reported: reported.has(id) }));
+  // The site runs one change at a time, so any active run (fix, update, cleanup) blocks protection changes.
+  const [runs, activeRun] = await Promise.all([
+    db.repairProposal.findMany({
+      where: { websiteId: owned.website.id, operationIds: { has: "set_hardening" }, proposal: { path: ["kind"], equals: "compromise_cleanup" } },
+      orderBy: { createdAt: "desc" }, take: 3,
+      select: { id: true, status: true, verificationStatus: true, createdAt: true, proposal: true },
+    }),
+    db.repairProposal.findFirst({
+      where: { websiteId: owned.website.id, status: { in: ["approved", "executing"] }, proposal: { path: ["kind"], equals: "compromise_cleanup" } },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, status: true, verificationStatus: true, createdAt: true, proposal: true },
+    }),
+  ]);
+  const describe = (run: (typeof runs)[number]) => {
+    const proposal = run.proposal as { issue?: string; cleanup?: { steps?: Array<{ description?: string; operation?: string }>; execution?: { steps?: Array<{ status: string; message: string }> } } };
+    const cleanup = proposal.cleanup ?? {};
+    return { id: run.id, status: run.status, createdAt: run.createdAt, title: proposal.issue ?? "Site change", protection: (cleanup.steps ?? []).every((step) => step.operation === "set_hardening"), steps: (cleanup.steps ?? []).map((step) => step.description ?? ""), results: cleanup.execution?.steps ?? null };
+  };
+  const pending = activeRun;
+  const latest = runs.find((run) => run.status !== "approved" && run.status !== "executing");
   return NextResponse.json({
+    pending: pending ? describe(pending) : null,
+    latest: latest ? describe(latest) : null,
     pluginVersion: diagnostics.site?.pluginVersion ?? null,
     supported: Boolean(diagnostics.hardening),
     measures,
@@ -68,7 +90,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ sit
   if (!changes.length) return NextResponse.json({ error: "All recommended protection is already on." }, { status: 409 });
   try {
     const started = await startProtectionChange({ websiteId: owned.website.id, organizationId: owned.website.organizationId, changes, actor: { kind: request.headers.get("x-awd-interface") === "mcp" ? "mcp" : "admin", userId: owned.ownerId } });
-    return NextResponse.json({ repairId: started.repairId, steps: started.steps.map((step) => step.description), status: "queued_for_site_poll", message: "Approved. The plugin applies it on its next check-in (usually within 5 minutes) and tests each rule on your server." }, { status: 201 });
+    return NextResponse.json({ repairId: started.repairId, steps: started.steps.map((step) => step.description), status: "queued_for_site_poll", message: "Approved and sent to the site. It usually takes effect within a few seconds; each rule is tested on your server." }, { status: 201 });
   } catch (error) {
     if (error instanceof CleanupError) return NextResponse.json({ error: error.message }, { status: error.status });
     throw error;

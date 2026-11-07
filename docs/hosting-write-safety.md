@@ -25,6 +25,7 @@ Allowed operations, each bound to evidence the owner reviewed:
 | `update_plugin` / `reinstall_plugin` | An installed WordPress.org plugin at the reviewed version (never AI Website Doctor). The package comes only from `downloads.wordpress.org` and every installed file must match the official per-file checksums for the target version. The site's home page is loaded before and after; if it breaks, the previous directory is put back immediately. | The previous plugin directory |
 | `install_plugin` | A WordPress.org plugin slug that is not installed, at an exact version, verified the same way; optional activation is undone if the site breaks. | Restore deactivates it and moves it to the quarantine |
 | `set_hardening` | One protection measure on or off. `.htaccess` measures write only between `# BEGIN/END AI Website Doctor hardening` markers (the injection detector trusts that block only while it matches the digest the plugin recorded), are tested on the server, and the root rules are removed again if the home page returns 5xx. Runtime measures are plugin filters. | Previous on/off state |
+| `restore_run` | Requested from the app for a finished run that still has its quarantine: reverses that run's applied steps under the same conflict rule as a local restore. | None (it is the undo) |
 
 Invariants:
 

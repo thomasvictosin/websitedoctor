@@ -31,10 +31,12 @@ define('AWD_CLEANUP_SALT_KEYS', 'AUTH_KEY,SECURE_AUTH_KEY,LOGGED_IN_KEY,NONCE_KE
 add_action('admin_post_awd_cleanup_run', 'awd_cleanup_run_from_admin');
 add_action('admin_post_awd_cleanup_restore', 'awd_cleanup_restore_from_admin');
 add_action('admin_post_awd_fix_issue', 'awd_fix_issue_from_admin');
+add_action('admin_post_awd_cleanup_purge', 'awd_cleanup_purge_from_admin');
+add_action('rest_api_init', 'awd_register_wake_route');
 
 function awd_cleanup_operations(): array
 {
-    return array('quarantine_file', 'restore_core_file', 'remove_htaccess_rules', 'quarantine_plugin', 'demote_user', 'rotate_salts', 'purge_page_cache', 'purge_quarantine', 'update_plugin', 'reinstall_plugin', 'install_plugin', 'set_hardening');
+    return array('quarantine_file', 'restore_core_file', 'remove_htaccess_rules', 'quarantine_plugin', 'demote_user', 'rotate_salts', 'purge_page_cache', 'purge_quarantine', 'update_plugin', 'reinstall_plugin', 'install_plugin', 'set_hardening', 'restore_run');
 }
 
 function awd_cleanup_root(): string
@@ -136,6 +138,8 @@ function awd_cleanup_step_is_valid($step): bool
             return $keys === array('expectedVersion', 'plugin') && awd_plugin_slug($params['plugin']) !== null
                 && strpos($params['plugin'], 'ai-website-doctor/') !== 0 && (bool) preg_match('#^[a-z0-9-]+/[A-Za-z0-9._-]+\.php$#', $params['plugin'])
                 && (bool) preg_match('/^[0-9A-Za-z.+-]{1,40}$/', $params['expectedVersion']);
+        case 'restore_run':
+            return $keys === array('runId') && (bool) preg_match('/^[a-z0-9-]{8,64}$/', $params['runId']);
         case 'set_hardening':
             return $keys === array('measure', 'state') && in_array($params['state'], array('on', 'off'), true)
                 && function_exists('awd_hardening_measures') && array_key_exists($params['measure'], awd_hardening_measures());
@@ -497,6 +501,7 @@ function awd_cleanup_execute_steps(string $run_id, string $repair_id, array $ste
         'reinstall_plugin' => 'awd_cleanup_op_reinstall_plugin',
         'install_plugin' => 'awd_cleanup_op_install_plugin',
         'set_hardening' => 'awd_cleanup_op_set_hardening',
+        'restore_run' => 'awd_cleanup_op_restore_run',
     );
     $results = array();
     foreach (array_values($steps) as $index => $step) {
@@ -693,16 +698,27 @@ function awd_render_cleanup_section(array $settings): void
     }
     $runs = array_reverse(awd_cleanup_runs(), true);
     if ($runs) {
-        echo '<h3>Earlier cleanup runs</h3><ul>';
+        echo '<h3>Quarantine (earlier cleanup and update runs)</h3><p class="awd-muted">Every file a run changed or removed is kept here. Restore puts the run back; Delete permanently frees the space once you are sure the site works. Deleting cannot be undone.</p><ul>';
         foreach ($runs as $run_id => $run) {
             $steps = (array) ($run['steps'] ?? array());
-            $applied = count(array_filter($steps, static function ($step) { return ($step['status'] ?? '') === 'applied'; }));
-            echo '<li>' . esc_html(sprintf('%s · %d of %d steps applied%s', (string) ($run['createdAt'] ?? ''), $applied, count($steps), !empty($run['purgedAt']) ? ' · quarantine purged' : '')) . ' ';
-            if (empty($run['purgedAt']) && $applied > 0) {
-                echo '<form class="awd-inline-form" method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="awd_cleanup_restore"><input type="hidden" name="run_id" value="' . esc_attr((string) $run_id) . '">';
+            $applied = array_filter($steps, static function ($step) { return ($step['status'] ?? '') === 'applied'; });
+            $restored = array_filter($steps, static function ($step) { return !empty($step['restoredAt']); });
+            $state = !empty($run['purgedAt']) ? 'permanently deleted ' . (string) $run['purgedAt'] : ($restored ? 'restored' : 'in quarantine');
+            echo '<li><strong>' . esc_html(sprintf('%s · %d of %d steps applied · %s', (string) ($run['createdAt'] ?? ''), count($applied), count($steps), $state)) . '</strong>';
+            $items = array();
+            foreach ($applied as $step) {
+                $recovery = (array) ($step['recovery'] ?? array());
+                $items[] = (string) ($recovery['path'] ?? $recovery['plugin'] ?? $recovery['login'] ?? $recovery['measure'] ?? $step['operation']);
+            }
+            if ($items) echo '<details><summary>' . esc_html(count($items) . ' item(s)') . '</summary><ul><li>' . implode('</li><li>', array_map('esc_html', array_slice($items, 0, 100))) . '</li></ul></details>';
+            if (empty($run['purgedAt']) && $applied && !$restored) {
+                echo '<div class="awd-run-actions"><form class="awd-inline-form" method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="awd_cleanup_restore"><input type="hidden" name="run_id" value="' . esc_attr((string) $run_id) . '">';
                 wp_nonce_field('awd_cleanup_restore_' . $run_id);
                 submit_button('Restore this run', 'secondary', 'submit', false);
-                echo '</form>';
+                echo '</form> <form class="awd-inline-form" method="post" action="' . esc_url(admin_url('admin-post.php')) . '" onsubmit="return confirm(' . esc_attr(wp_json_encode('Permanently delete the quarantined files of this run? It can no longer be restored afterwards.')) . ');"><input type="hidden" name="action" value="awd_cleanup_purge"><input type="hidden" name="run_id" value="' . esc_attr((string) $run_id) . '">';
+                wp_nonce_field('awd_cleanup_purge_' . $run_id);
+                submit_button('Delete permanently', 'delete', 'submit', false);
+                echo '</form></div>';
             }
             echo '</li>';
         }
@@ -758,4 +774,59 @@ function awd_cleanup_op_set_hardening(array $params, array $context): array
     if ($was === $enable) return awd_cleanup_result('skipped', 'Already ' . $params['state'] . '.');
     $result = awd_hardening_apply($params['measure'], $enable);
     return awd_cleanup_result($result['ok'] ? 'applied' : 'failed', $result['message'], array('measure' => $params['measure'], 'wasEnabled' => $was));
+}
+
+function awd_cleanup_op_restore_run(array $params, array $context): array
+{
+    $runs = awd_cleanup_runs();
+    if (!isset($runs[$params['runId']])) return awd_cleanup_result('failed', 'That run is not in this site\'s quarantine.');
+    $results = awd_cleanup_restore_run($params['runId']);
+    $restored = count(array_filter($results, static function ($result) { return $result['status'] === 'restored'; }));
+    if (!$results) return awd_cleanup_result('skipped', 'Nothing left to restore in that run.');
+    return awd_cleanup_result($restored ? 'applied' : 'failed', sprintf('%d step(s) restored, %d kept because they changed since the run.', $restored, count($results) - $restored));
+}
+
+function awd_cleanup_purge_from_admin(): void
+{
+    if (!current_user_can('manage_options')) wp_die(esc_html__('You are not allowed to delete quarantined files.', 'ai-website-doctor'), 403);
+    $run_id = isset($_POST['run_id']) ? sanitize_text_field(wp_unslash($_POST['run_id'])) : '';
+    check_admin_referer('awd_cleanup_purge_' . $run_id);
+    $runs = awd_cleanup_runs();
+    if (!isset($runs[$run_id])) awd_redirect('Unknown cleanup run.', 'error');
+    $result = awd_cleanup_op_purge_quarantine(array('runId' => $run_id), array());
+    awd_authenticated_request(awd_settings(), '/cleanup-executions', 'POST', array(
+        'event' => 'purged', 'repairId' => (string) $runs[$run_id]['repairId'], 'runId' => $run_id, 'completedAt' => gmdate('c'),
+        'steps' => array(array('index' => 0, 'operation' => 'purge_quarantine', 'status' => $result['status'], 'message' => $result['message'])),
+    ));
+    awd_redirect($result['message'], $result['status'] === 'applied' ? 'success' : 'warning');
+}
+
+/**
+ * Wake-up from the central app after it approved work for this site, so it
+ * runs in seconds instead of on the next five-minute WP-Cron poll. It accepts
+ * no data: it only makes the plugin contact the configured central app over
+ * its signed connection. At most once every 20 seconds.
+ */
+function awd_register_wake_route(): void
+{
+    register_rest_route('ai-website-doctor/v1', '/wake', array(
+        'methods' => 'POST',
+        'permission_callback' => '__return_true',
+        'callback' => 'awd_wake_handler',
+    ));
+}
+
+function awd_wake_handler()
+{
+    $settings = awd_settings();
+    if (empty($settings['agent_id']) || empty($settings['agent_token'])) return new WP_REST_Response(array('ok' => false), 404);
+    if (get_transient('awd_wake_lock')) return new WP_REST_Response(array('ok' => true, 'throttled' => true), 202);
+    set_transient('awd_wake_lock', 1, 20);
+    ignore_user_abort(true);
+    register_shutdown_function(static function () {
+        if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
+        elseif (function_exists('litespeed_finish_request')) litespeed_finish_request();
+        awd_poll_central();
+    });
+    return new WP_REST_Response(array('ok' => true), 202);
 }

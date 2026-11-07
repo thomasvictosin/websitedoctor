@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import { HostingManager } from "./hosting-manager";
 import { BackupsManager } from "./backups-manager";
 import { CleanupManager } from "./cleanup-manager";
+import { useConfirm } from "./confirm-dialog";
 import { CloudflarePanel, ProtectionManager } from "./protection-manager";
 import { McpAccessManager } from "./mcp-access-manager";
 import { parseAssistantRepairPermissionCommand } from "@/lib/repair-assistant-intent";
@@ -125,6 +126,7 @@ type Issue = {
     executionStatus: string;
     verificationStatus: string;
     rollbackStatus: string;
+    createdAt: string;
     proposal: {
       issue: string;
       rationale: string;
@@ -186,6 +188,36 @@ type AssistantMessage = {
 };
 type DeterministicRecommendation = { kind: "supported_candidate" | "manual_guidance"; summary: string; proposedChanges: string[]; manualGuidance: string[]; risk: string; verificationPlan: string[]; executableOperation: string | null; requiresApproval: true };
 
+const textList = (value: unknown) => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+
+/**
+ * Give every repair proposal the fields the UI renders. Proposals come from
+ * several generations of the app (repairs, manual guidance, cleanup and
+ * maintenance runs); one record missing a list must never break the page.
+ */
+function normalizeIssues(issues: Issue[]): Issue[] {
+  return (Array.isArray(issues) ? issues : []).map((issue) => ({
+    ...issue,
+    toolIds: textList(issue.toolIds),
+    repairs: (Array.isArray(issue.repairs) ? issue.repairs : []).map((repair) => {
+      const proposal = (repair.proposal && typeof repair.proposal === "object" ? repair.proposal : {}) as Issue["repairs"][number]["proposal"];
+      return {
+        ...repair,
+        operationIds: textList(repair.operationIds),
+        events: Array.isArray(repair.events) ? repair.events : [],
+        proposal: {
+          ...proposal,
+          issue: typeof proposal.issue === "string" ? proposal.issue : issue.title,
+          rationale: typeof proposal.rationale === "string" ? proposal.rationale : "",
+          proposedChanges: textList(proposal.proposedChanges),
+          verificationPlan: textList(proposal.verificationPlan),
+          manualGuidance: proposal.manualGuidance === undefined ? undefined : textList(proposal.manualGuidance),
+        },
+      };
+    }),
+  }));
+}
+
 export default function Home() {
   const [websites, setWebsites] = useState<Website[]>([]);
   const [issues, setIssues] = useState<Issue[]>([]);
@@ -202,6 +234,8 @@ export default function Home() {
   const [monitoringEnabled, setMonitoringEnabled] = useState(false);
   const [intervalMinutes, setIntervalMinutes] = useState(60);
   const [busy, setBusy] = useState<string | null>(null);
+  const dialogs = useConfirm();
+  const [fixInProgress, setFixInProgress] = useState(false);
   const [message, setMessage] = useState("");
   const [scanProgress, setScanProgress] = useState<Record<string, { scanId: string; status: string; withAi: boolean }>>({});
   const [history, setHistory] = useState<Record<string, Check[]>>({});
@@ -248,7 +282,7 @@ export default function Home() {
       membersResponse.json() as Promise<{ members: Array<{ user: TeamMember; role: string }> }>,
     ]);
     setWebsites(sites);
-    setIssues(currentIssues);
+    setIssues(normalizeIssues(currentIssues));
     setSettings(currentSettings);
     setMembers(memberData.members.map(({ user, role }: { user: TeamMember; role: string }) => ({ ...user, role })));
     setAssistantWebsiteId((current) => current || sites[0]?.id || "");
@@ -261,12 +295,12 @@ export default function Home() {
       if (active) setMessage(error instanceof Error ? error.message : "Could not load dashboard data.");
     });
     void load();
-    const timer = window.setInterval(() => { void load(); }, 15_000);
+    const timer = window.setInterval(() => { void load(); }, fixInProgress ? 5_000 : 15_000);
     return () => {
       active = false;
       window.clearInterval(timer);
     };
-  }, [refresh]);
+  }, [refresh, fixInProgress]);
 
   useEffect(() => {
     if (!selectedWebsiteId) return;
@@ -421,7 +455,7 @@ export default function Home() {
   }
 
   async function removeMember(member: TeamMember) {
-    if (!window.confirm(`Remove ${member.email} from this organization?`)) return;
+    if (!await dialogs.confirm({ title: `Remove ${member.email}?`, body: "They lose access to this organization immediately.", confirmLabel: "Remove member", danger: true })) return;
     setBusy(`member:remove:${member.id}`);
     try {
       const response = await fetch("/api/members", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ userId: member.id }) });
@@ -589,7 +623,7 @@ export default function Home() {
   }
 
   async function deleteWebsite(site: Website) {
-    if (!window.confirm(`Remove ${site.name} and its monitoring history?`)) return;
+    if (!await dialogs.confirm({ title: `Remove ${site.name}?`, body: "Its monitoring history, issues and repair records are deleted from this app. The website itself is not changed.", confirmLabel: "Remove website", danger: true })) return;
     setBusy(`delete:${site.id}`);
     try {
       const response = await fetch(`/api/sites/${site.id}`, { method: "DELETE" });
@@ -645,7 +679,7 @@ export default function Home() {
   }
 
   async function disconnectAgent(agentId: string) {
-    if (!window.confirm("Revoke this WordPress agent connection?")) return;
+    if (!await dialogs.confirm({ title: "Revoke the WordPress agent connection?", body: "The plugin can no longer sync or run approved repairs until it is paired again.", confirmLabel: "Revoke connection", danger: true })) return;
     try {
       const response = await fetch(`/api/agents/${agentId}/disconnect`, { method: "POST" });
       const result = await response.json();
@@ -680,6 +714,33 @@ export default function Home() {
     }
   }
 
+  useEffect(() => {
+    setFixInProgress(issues.some((issue) => issue.repairs.some((repair) => (repair.proposal as { kind?: string }).kind === "compromise_cleanup" && ["approved", "executing"].includes(repair.status))));
+  }, [issues]);
+
+  /** A one-click run that is queued or running on this website, if any (the site runs one at a time). */
+  function activeRunForSite(siteId: string) {
+    for (const candidate of issues) {
+      if (candidate.website.id !== siteId) continue;
+      const run = candidate.repairs.find((repair) => (repair.proposal as { kind?: string }).kind === "compromise_cleanup" && ["approved", "executing"].includes(repair.status));
+      if (run) return run;
+    }
+    return null;
+  }
+
+  /** Status line for an issue's most recent one-click fix. */
+  function fixProgress(issue: Issue) {
+    const run = issue.repairs.find((repair) => (repair.proposal as { kind?: string }).kind === "compromise_cleanup");
+    if (!run) return null;
+    if (run.status === "approved") return { active: true, text: "Waiting for the site to pick up the fix…" };
+    if (run.status === "executing") return { active: true, text: "Applying the fix on the site…" };
+    const age = Date.now() - new Date(run.createdAt).getTime();
+    if (age > 60 * 60_000) return null;
+    if (run.status === "verified") return { active: false, text: "Fixed and verified. The finding clears with the next sync." };
+    if (run.status === "rolled_back") return { active: false, text: "The fix was restored." };
+    return { active: false, text: "The fix did not verify; open View Repair Details below for what remains." };
+  }
+
   /** Open a website's detail view on a tab from any page and bring it into view. */
   function openWebsiteDetail(siteId: string, tab: typeof websiteDetailTab = "overview") {
     setSelectedWebsiteId(siteId);
@@ -711,7 +772,7 @@ export default function Home() {
       setMessage("Compromise findings are fixed together: review the cleanup plan below and approve it once.");
       return;
     }
-    if (!window.confirm(fix.confirm)) return;
+    if (!await dialogs.confirm({ title: fix.label, body: fix.confirm, confirmLabel: "Approve fix" })) return;
     setBusy(`fix:${issue.id}`);
     try {
       const response = await fetch(`/api/issues/${issue.id}/fix`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ confirm: true }) });
@@ -741,7 +802,7 @@ export default function Home() {
       const replaceBrokenLink = issue.fingerprint.startsWith("browser:broken-link:")
         && findingEvidence.kind === "missing_page" && [404, 410].includes(Number(findingEvidence.statusCode));
       const replacementUrl = replaceBrokenLink
-        ? window.prompt("Enter the exact same-site URL to replace the confirmed broken link. It must be a reachable page on this website.")?.trim()
+        ? (await dialogs.prompt({ title: "Replacement link", body: "Enter the exact same-site URL that should replace the confirmed broken link. It must be a reachable page on this website.", confirmLabel: "Use this URL", input: { label: "Replacement URL", placeholder: "https://example.com/new-page/" } }))?.trim()
         : undefined;
       if (replaceBrokenLink && !replacementUrl) return null;
       const response = await fetch(`/api/issues/${issue.id}/repairs`, {
@@ -1266,6 +1327,7 @@ export default function Home() {
             onUpdate={(updates) => updateWebsite(selectedWebsite, updates)}
             onScan={(withAi) => runScanWorkflow(selectedWebsite, withAi)}
             onSecurityCheck={() => runSecurityCheck(selectedWebsite)}
+            onNotice={setMessage}
             scanStatus={scanProgress[selectedWebsite.id] ?? null}
             websites={websites}
           />
@@ -1355,10 +1417,15 @@ export default function Home() {
                 {issue.toolIds.length > 0 && <small className="tool-evidence">Relevant evidence: {issue.toolIds.join(", ")}</small>}
                 <div className="issue-actions">
                   {oneClickFix(issue) && (
-                    <button className="button primary" onClick={() => fixIssue(issue)} disabled={busy !== null || issue.repairs.some((repair) => (repair.proposal as { kind?: string }).kind === "compromise_cleanup" && ["approved", "executing"].includes(repair.status))}>
-                      {busy === `fix:${issue.id}` ? "Approving…" : issue.repairs.some((repair) => (repair.proposal as { kind?: string }).kind === "compromise_cleanup" && ["approved", "executing"].includes(repair.status)) ? "Fix in progress…" : oneClickFix(issue)!.label}
+                    <button className="button primary" onClick={() => fixIssue(issue)} disabled={busy !== null || Boolean(activeRunForSite(issue.website.id) && oneClickFix(issue)!.confirm)}
+                      title={activeRunForSite(issue.website.id) ? `The site is working on “${activeRunForSite(issue.website.id)!.proposal.issue}”; it handles one change at a time.` : undefined}>
+                      {busy === `fix:${issue.id}` ? "Approving…" : issue.repairs.some((repair) => (repair.proposal as { kind?: string }).kind === "compromise_cleanup" && ["approved", "executing"].includes(repair.status)) ? "Fix in progress…" : activeRunForSite(issue.website.id) && oneClickFix(issue)!.confirm ? "Site busy…" : oneClickFix(issue)!.label}
                     </button>
                   )}
+                  {(() => {
+                    const progress = fixProgress(issue);
+                    return progress ? <span className="fix-progress" role="status">{progress.active && <span className="spinner" aria-hidden="true" />}{progress.text}</span> : null;
+                  })()}
                   <button className="button ghost" onClick={() => loadRecommendation(issue)} disabled={busy !== null}>
                     {busy === `recommend:${issue.id}` ? "Preparing…" : recommendations[issue.id] ? "Refresh Recommendation" : "Get Recommendation (No AI)"}
                   </button>
@@ -1668,6 +1735,7 @@ function WebsiteDetail({
   onUpdate,
   onScan,
   onSecurityCheck,
+  onNotice,
   scanStatus,
 }: {
   site: Website;
@@ -1681,6 +1749,7 @@ function WebsiteDetail({
   onUpdate: (updates: Partial<Pick<Website, "monitoringEnabled" | "intervalMinutes" | "environmentType" | "relatedWebsiteId">>) => void;
   onScan: (withAi: boolean) => void;
   onSecurityCheck: () => void;
+  onNotice: (message: string) => void;
   scanStatus: { scanId: string; status: string; withAi: boolean } | null;
 }) {
   const check = site.checks[0] ?? null;
@@ -1693,8 +1762,8 @@ function WebsiteDetail({
     return browser.finding && typeof browser.finding === "object" ? browser.finding as Record<string, unknown> : {};
   };
   if (tab === "backups") return <BackupsManager websiteId={site.id} />;
-  if (tab === "cleanup") return <CleanupManager websiteId={site.id} />;
-  if (tab === "protection") return <><ProtectionManager websiteId={site.id} /><CloudflarePanel websiteId={site.id} /></>;
+  if (tab === "cleanup") return <CleanupManager websiteId={site.id} onNotice={onNotice} />;
+  if (tab === "protection") return <><ProtectionManager websiteId={site.id} onNotice={onNotice} /><CloudflarePanel websiteId={site.id} onNotice={onNotice} /></>;
   if (tab === "overview") {
     return <div className="detail-content">
       <div className="detail-metrics">

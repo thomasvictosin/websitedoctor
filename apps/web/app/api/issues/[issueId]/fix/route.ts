@@ -24,7 +24,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ iss
       repairId: started.repairId,
       steps: started.steps.map((step) => step.description),
       status: "queued_for_site_poll",
-      message: "Approved. The WordPress plugin applies it on its next poll (usually within 5 minutes), verifies the files against WordPress.org and puts the previous version back if anything fails.",
+      message: "Approved and sent to the site. It usually runs within a few seconds; the files are verified against WordPress.org and the previous version is put back if anything fails.",
     }, { status: 201, headers: { "cache-control": "no-store" } });
   } catch (error) {
     if (error instanceof CleanupError) return NextResponse.json({ error: error.message }, { status: error.status });

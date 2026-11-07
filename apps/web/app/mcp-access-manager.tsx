@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import { useConfirm } from "./confirm-dialog";
 
 type McpToken = {
   id: string;
@@ -22,6 +23,7 @@ function tokenState(token: McpToken) {
 
 export function McpAccessManager({ onNotice }: { onNotice: (message: string) => void }) {
   const [tokens, setTokens] = useState<McpToken[]>([]);
+  const dialogs = useConfirm();
   const [name, setName] = useState("Claude Code");
   const [expiry, setExpiry] = useState<Expiry>("90");
   const [busy, setBusy] = useState(false);
@@ -61,7 +63,7 @@ export function McpAccessManager({ onNotice }: { onNotice: (message: string) => 
   }
 
   async function revoke(token: McpToken) {
-    if (!window.confirm(`Revoke "${token.name}"? Claude clients using it will lose access immediately.`)) return;
+    if (!await dialogs.confirm({ title: `Revoke "${token.name}"?`, body: "Claude clients using it lose access immediately.", confirmLabel: "Revoke token", danger: true })) return;
     try {
       const response = await fetch("/api/mcp-tokens", { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ tokenId: token.id }) });
       const result = await response.json();

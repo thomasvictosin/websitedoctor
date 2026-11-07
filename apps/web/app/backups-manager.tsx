@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useConfirm } from "./confirm-dialog";
 
 type BackupRow = {
   id: string;
@@ -38,6 +39,7 @@ function restoreMessage(value: unknown): string | null {
 }
 
 export function BackupsManager({ websiteId }: { websiteId: string }) {
+  const dialogs = useConfirm();
   const [data, setData] = useState<BackupResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [restoringId, setRestoringId] = useState<string | null>(null);
@@ -65,7 +67,7 @@ export function BackupsManager({ websiteId }: { websiteId: string }) {
   }, [data?.backups, load]);
 
   async function requestRestore(backup: BackupRow) {
-    if (!window.confirm("Request restoration of only this repair’s saved WordPress state? The paired plugin will require a local administrator to confirm, and will stop if the target has changed.")) return;
+    if (!await dialogs.confirm({ title: "Restore this repair's saved state?", body: "Only this repair's saved WordPress state is restored. The paired plugin asks a local administrator to confirm, and stops if the target has changed since.", confirmLabel: "Request restore" })) return;
     setRestoringId(backup.id);
     setNotice("");
     try {
