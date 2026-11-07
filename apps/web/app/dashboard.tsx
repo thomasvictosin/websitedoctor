@@ -679,6 +679,20 @@ export default function Home() {
     }
   }
 
+  /** Open a website's detail view on a tab from any page and bring it into view. */
+  function openWebsiteDetail(siteId: string, tab: typeof websiteDetailTab = "overview") {
+    setSelectedWebsiteId(siteId);
+    setWebsiteDetailTab(tab);
+    setActiveView("websites");
+    setTimeout(() => document.getElementById("website-detail")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  }
+
+  /** Open critical/high compromise findings (outside check or integrity scan) for a website. */
+  function compromiseFindings(siteId: string) {
+    return issues.filter((issue) => issue.website.id === siteId && issue.status !== "resolved"
+      && /^(?:wp:)?(?:security|integrity):/.test(issue.fingerprint) && (issue.severity === "critical" || issue.severity === "high"));
+  }
+
   function oneClickFix(issue: Issue) {
     if (issue.status === "resolved") return null;
     if (issue.fingerprint.startsWith("wp:plugin-update:")) return { label: "Fix: update plugin", confirm: "Update this plugin on the live site now? It is downloaded from WordPress.org, checked against the official checksums, and the previous version is put back automatically if the site breaks." };
@@ -691,9 +705,8 @@ export default function Home() {
     const fix = oneClickFix(issue);
     if (!fix) return;
     if (!fix.confirm) {
-      setSelectedWebsiteId(issue.website.id);
-      setWebsiteDetailTab("cleanup");
-      setMessage("Compromise findings are fixed together: review the cleanup plan and approve it once.");
+      openWebsiteDetail(issue.website.id, "cleanup");
+      setMessage("Compromise findings are fixed together: review the cleanup plan below and approve it once.");
       return;
     }
     if (!window.confirm(fix.confirm)) return;
@@ -975,6 +988,15 @@ export default function Home() {
           : "Monitor availability, review evidence, and get local AI guidance — all from your own machine."}</p>
       </section>
 
+      {activeView === "dashboard" && websites.filter((site) => compromiseFindings(site.id).length > 0).map((site) => (
+        <section className="compromise-alert" role="alert" key={`compromise-${site.id}`}>
+          <div>
+            <strong>{site.name} shows signs of being hacked</strong>
+            <p>{compromiseFindings(site.id).length} critical or high security finding(s), for example: {compromiseFindings(site.id).slice(0, 2).map((issue) => issue.title).join("; ")}.</p>
+          </div>
+          <button className="button primary" onClick={() => openWebsiteDetail(site.id, "cleanup")}>Review cleanup plan</button>
+        </section>
+      ))}
       {activeView === "dashboard" && <section className="summary-grid" aria-label="Monitoring summary">
         <article className="summary-card">
           <span className="summary-icon icon-purple">◎</span>
@@ -1065,10 +1087,11 @@ export default function Home() {
                       <button className="button ghost" onClick={() => toggleHistory(site)}>
                         {history[site.id] ? "Hide history" : "History"}
                       </button>
-                      <button className="button ghost" onClick={() => {
-                        setSelectedWebsiteId(site.id);
-                        setWebsiteDetailTab("overview");
-                      }}>Details</button>
+                      <button className={compromiseFindings(site.id).length ? "button primary" : "button ghost"} onClick={() => openWebsiteDetail(site.id, "cleanup")}
+                        title="Review the cleanup plan and one-click fixes for this website.">
+                        {compromiseFindings(site.id).length ? `Clean up hacked site (${compromiseFindings(site.id).length})` : "Clean up & fixes"}
+                      </button>
+                      <button className="button ghost" onClick={() => openWebsiteDetail(site.id, "overview")}>Details</button>
                       <button className="button ghost danger-text" onClick={() => deleteWebsite(site)} disabled={busy !== null}>Remove</button>
                     </div>
                     {currentScan && <small className="diagnostic-limit">Latest scan: {currentScan.status.replaceAll("_", " ")}{currentScan.withAi ? " · AI analysis selected" : " · automated evidence only"}</small>}
@@ -1218,7 +1241,7 @@ export default function Home() {
       </div>}
 
       {activeView === "websites" && selectedWebsite && (
-        <section className="panel detail-panel">
+        <section className="panel detail-panel" id="website-detail">
           <div className="panel-heading">
             <div><p className="eyebrow">WEBSITE DETAIL</p><h2>{selectedWebsite.name}</h2></div>
             <button className="button ghost" onClick={() => setSelectedWebsiteId(null)}>Close details</button>
@@ -1226,7 +1249,7 @@ export default function Home() {
           <div className="detail-tabs" role="tablist" aria-label="Website detail sections">
             {(["overview", "diagnostics", "performance", "accessibility", "responsive", "repair-history", "cleanup", "backups", "history", "settings"] as const).map((tab) => (
               <button key={tab} role="tab" aria-selected={websiteDetailTab === tab} className={websiteDetailTab === tab ? "active" : ""}
-                onClick={() => setWebsiteDetailTab(tab)}>{tab}</button>
+                onClick={() => setWebsiteDetailTab(tab)}>{tab === "cleanup" ? "Clean up & fixes" : tab}</button>
             ))}
           </div>
           <WebsiteDetail

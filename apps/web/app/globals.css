@@ -502,3 +502,5 @@ h2 { color: #203747; font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
 .cleanup-steps, .cleanup-optional { margin: 6px 0 14px; padding-left: 20px; line-height: 1.5; overflow-wrap: anywhere; }
 .cleanup-optional { list-style: none; padding-left: 0; }
 .cleanup-optional li { margin: 6px 0; }
+.compromise-alert { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; justify-content: space-between; margin: 18px 0 0; padding: 16px 18px; border: 1px solid #f1c7c7; border-radius: 12px; background: #fff6f6; color: #8a2b2b; }
+.compromise-alert p { margin: 4px 0 0; color: #6f3131; overflow-wrap: anywhere; }
