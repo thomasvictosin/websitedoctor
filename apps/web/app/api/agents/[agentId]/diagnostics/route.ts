@@ -6,6 +6,7 @@ import { readBoundedJson } from "@/lib/request-json";
 import { deriveEvidenceSignals, selectRelevantTools } from "@/lib/ai/tool-registry";
 import { proposeStandingEligibleRepair } from "@/lib/repair-authorization";
 import { runAutomaticProtection } from "@/lib/protection";
+import { storeVulnerabilityFindings } from "@/lib/vulnerabilities";
 
 export const runtime = "nodejs";
 
@@ -159,7 +160,11 @@ export async function POST(
   });
   // Self-healing and automatic updates run after the response so the plugin's sync stays fast.
   const websiteIdForProtection = auth.agent.websiteId;
-  after(() => runAutomaticProtection(websiteIdForProtection));
+  const diagnosticsForVulnerabilities = parsed.data;
+  after(async () => {
+    try { await storeVulnerabilityFindings(websiteIdForProtection, diagnosticsForVulnerabilities); } catch (error) { console.error("Vulnerability matching failed:", error instanceof Error ? error.message : error); }
+    await runAutomaticProtection(websiteIdForProtection);
+  });
   return NextResponse.json({
     ok: true,
     issueCount: parsed.data.issues.length,

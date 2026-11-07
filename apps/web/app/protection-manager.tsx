@@ -114,3 +114,93 @@ export function ProtectionManager({ websiteId }: { websiteId: string }) {
     </div>
   );
 }
+
+type CloudflareState =
+  | { connected: false; requiredPermissions: string[] }
+  | { connected: true; zoneName: string; zoneStatus: string; plan: string; proxied: boolean; securityLevel: unknown; awdFirewallRules: number; otherFirewallRules: number; awdRateLimitRules: number; botFightMode: unknown; applied: { at: string; botFightMode: boolean; verified: boolean | null; verification: string } | null; requiredPermissions: string[] };
+
+/** Edge protection through the owner's Cloudflare account. */
+export function CloudflarePanel({ websiteId }: { websiteId: string }) {
+  const [state, setState] = useState<CloudflareState | null>(null);
+  const [token, setToken] = useState("");
+  const [botFight, setBotFight] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [steps, setSteps] = useState<Array<{ step: string; ok: boolean; detail: string }>>([]);
+
+  const load = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/sites/${websiteId}/cloudflare`, { cache: "no-store" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Could not load the Cloudflare status.");
+      setState(body);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not load the Cloudflare status.");
+    }
+  }, [websiteId]);
+  useEffect(() => { void load(); }, [load]);
+
+  async function act(body: Record<string, unknown>, confirmText?: string) {
+    if (confirmText && !window.confirm(confirmText)) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const response = await fetch(`/api/sites/${websiteId}/cloudflare`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "The Cloudflare change failed.");
+      if (Array.isArray(result.steps)) setSteps(result.steps);
+      setMessage(result.verification ?? (body.action === "connect" ? `Connected to the Cloudflare zone ${result.zoneName} (${result.status}).` : "Done."));
+      setToken("");
+      await load();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The Cloudflare change failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="detail-panel">
+      <h3>Cloudflare edge protection</h3>
+      <p className="diagnostic-limit">Cloudflare sits in front of your server, so these rules stop attack traffic before it reaches WordPress or any file on the server. The free plan is enough.</p>
+      {!state ? <p>{message || "Loading…"}</p> : !state.connected ? (
+        <>
+          <ol className="cleanup-steps">
+            <li>Add the site to a free Cloudflare account and change the domain&apos;s nameservers to the two Cloudflare gives you (at your domain registrar). Keep the DNS records proxied (orange cloud).</li>
+            <li>In Cloudflare, open My Profile → API Tokens → Create Token → Custom token, limited to this site&apos;s zone, with: {state.requiredPermissions.join("; ")}.</li>
+            <li>Paste the token here. It is stored encrypted and never shown again.</li>
+          </ol>
+          <div className="cloudflare-connect">
+            <input type="password" autoComplete="off" placeholder="Cloudflare API token" value={token} onChange={(event) => setToken(event.target.value)} disabled={busy} />
+            <button className="button primary" disabled={busy || token.trim().length < 30} onClick={() => act({ action: "connect", token })}>{busy ? "Connecting…" : "Connect Cloudflare"}</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p>
+            Zone <strong>{state.zoneName}</strong> · {state.zoneStatus}{state.plan ? ` · ${state.plan}` : ""} ·{" "}
+            {state.proxied ? <span className="protection-state on">traffic passes through Cloudflare</span> : <span className="protection-state warn">traffic is NOT passing through Cloudflare yet (nameservers or proxied DNS)</span>}
+          </p>
+          <p className="diagnostic-limit">
+            App firewall rules: {state.awdFirewallRules} · login rate limit: {state.awdRateLimitRules ? "on" : "off"} · other rules kept untouched: {state.otherFirewallRules} · security level: {String(state.securityLevel ?? "unknown")} · Bot Fight Mode: {state.botFightMode === true ? "on" : state.botFightMode === false ? "off" : "unknown"}
+          </p>
+          {state.applied && <p className={state.applied.verified ? "protection-state on" : "protection-state warn"}>{state.applied.verification}</p>}
+          <label className="protection-toggle">
+            <input type="checkbox" checked={botFight} onChange={(event) => setBotFight(event.target.checked)} disabled={busy} />
+            <span><strong>Also turn on Bot Fight Mode</strong> (optional): challenges automated traffic site-wide. It also challenges this app&apos;s outside cloaking check, which then reports &quot;inconclusive&quot; instead of checking what Googlebot sees.</span>
+          </label>
+          <div className="issue-actions">
+            <button className="button primary" disabled={busy}
+              onClick={() => act({ action: "apply", botFightMode: botFight, confirm: true }, "Apply Cloudflare protection? The app sets security level medium, HTTPS only, TLS 1.2+, browser integrity check, a firewall rule (PHP in uploads, sensitive files, fake crawlers on login/admin, attack tools), a login challenge and a login rate limit. Your other Cloudflare rules are kept.")}>
+              {busy ? "Applying…" : state.awdFirewallRules ? "Re-apply Cloudflare protection" : "Apply Cloudflare protection"}
+            </button>
+            {state.awdFirewallRules > 0 && <button className="button ghost" disabled={busy} onClick={() => act({ action: "remove", confirm: true }, "Remove the app's Cloudflare rules (and turn Bot Fight Mode off)? Your other rules are kept.")}>Remove app rules</button>}
+            <button className="button ghost danger-text" disabled={busy} onClick={() => act({ action: "disconnect", confirm: true }, "Disconnect Cloudflare? The stored token is deleted; rules already applied stay in Cloudflare until removed.")}>Disconnect</button>
+          </div>
+        </>
+      )}
+      {steps.length > 0 && <ul className="diagnostic-limit">{steps.map((step) => <li key={step.step}>{step.ok ? "✓" : "✗"} {step.step}{step.ok ? "" : `: ${step.detail}`}</li>)}</ul>}
+      {message && <p role="status">{message}</p>}
+    </div>
+  );
+}

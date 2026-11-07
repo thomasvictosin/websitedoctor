@@ -19,6 +19,8 @@ const fixIssueRoute = () => import("@/app/api/issues/[issueId]/fix/route").then(
 const protectionGetRoute = () => import("@/app/api/sites/[siteId]/protection/route").then((module) => module.GET);
 const protectionPutRoute = () => import("@/app/api/sites/[siteId]/protection/route").then((module) => module.PUT);
 const protectionPostRoute = () => import("@/app/api/sites/[siteId]/protection/route").then((module) => module.POST);
+const cloudflareGetRoute = () => import("@/app/api/sites/[siteId]/cloudflare/route").then((module) => module.GET);
+const cloudflarePostRoute = () => import("@/app/api/sites/[siteId]/cloudflare/route").then((module) => module.POST);
 const historyRoute = () => import("@/app/api/sites/[siteId]/history/route").then((module) => module.GET);
 const repairPolicyRoute = () => import("@/app/api/sites/[siteId]/repair-authorization/route").then((module) => module.GET);
 
@@ -39,6 +41,7 @@ How the system works:
 - Hacked sites have a separate compromise cleanup playbook (plugin 0.3.0+): get_cleanup_plan builds an ordered list from the integrity scan and outside check (quarantine malicious/unknown files, restore modified core files from WordPress.org, remove injected .htaccess rules, optionally remove risky plugins or demote unknown admins, rotate salts, purge cache). start_cleanup approves exactly the reviewed plan (bound by planDigest) in one step. The plugin runs it on its next poll, keeps everything it changes in a private quarantine, rescans, and the app verifies from outside. A failed verification keeps the changes and lists what remains. purge_quarantine permanently deletes a verified run's quarantine.
 - One-click maintenance (plugin 0.4.0+): fix_issue applies a finding's single fix (update a plugin with an available update, or reinstall a WordPress.org plugin whose code differs from the official checksums); update_plugins updates all WordPress.org plugins with updates. Packages come only from WordPress.org, every file is checked against official checksums, and the previous version is put back automatically if the update fails or breaks the site. Premium plugins (not on WordPress.org) must be updated from their vendor.
 - Protection (plugin 0.5.0+): get_protection shows each hardening measure (block PHP in uploads, protect sensitive files, code editor off, XML-RPC off, hide usernames, security headers, fake-crawler/attack-tool filter) with whether it is verified effective on the server, the self-healing and automatic-update settings, and recent alerts. apply_protection turns measures on/off through the plugin; set_protection switches self-healing (automatic safe cleanup of new malware files, max 3/day) and daily verified plugin updates. No setting makes a site unhackable; say so if asked.
+- Cloudflare edge protection: get_cloudflare_status shows whether the site's Cloudflare zone is connected and traffic is proxied; apply_cloudflare_protection adds the app's rules (PHP in uploads, sensitive files, fake crawlers on login/admin, attack tools, login challenge and rate limit) and keeps the owner's own rules. The owner connects a Cloudflare API token in the dashboard's Protection tab; tokens are never accepted through MCP.
 
 Recommended workflow:
 1. list_websites, then list_issues for the site. When asked about a site's health or security, also run_security_check: a 200 response does not mean the site is healthy.
@@ -398,6 +401,26 @@ export function createWebsiteDoctorMcpServer(principal: RequestPrincipal, origin
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ siteId, selfHealing, autoUpdates }) => {
     const result = await callRoute(protectionPutRoute, `/api/sites/${encodeURIComponent(siteId)}/protection`, { method: "PUT", body: { ...(selfHealing === undefined ? {} : { selfHealing }), ...(autoUpdates === undefined ? {} : { autoUpdates }) }, params: { siteId } });
+    return result.ok ? text(result.data) : failure(result);
+  });
+
+  tool("get_cloudflare_status", {
+    title: "Get Cloudflare edge protection status",
+    description: "Return whether the site is connected to a Cloudflare zone, whether its traffic actually passes through Cloudflare, the app's firewall and rate-limit rules, Bot Fight Mode, and the last verification. The API token is never returned.",
+    inputSchema: { siteId: z.string().min(1).max(64) },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  }, async ({ siteId }) => {
+    const result = await callRoute(cloudflareGetRoute, `/api/sites/${encodeURIComponent(siteId)}/cloudflare`, { params: { siteId } });
+    return result.ok ? text(result.data) : failure(result);
+  });
+
+  tool("apply_cloudflare_protection", {
+    title: "Apply or remove Cloudflare edge protection",
+    description: "Apply the app's Cloudflare protection to a connected site (security level medium, HTTPS only, TLS 1.2+, browser integrity check, one block rule, a login challenge and a login rate limit; the owner's other rules are kept), or remove the app's rules. botFightMode also challenges automated traffic site-wide but makes the app's outside cloaking check inconclusive. Ask the user first.",
+    inputSchema: { siteId: z.string().min(1).max(64), remove: z.boolean().default(false), botFightMode: z.boolean().default(false), confirm: z.literal(true) },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+  }, async ({ siteId, remove, botFightMode, confirm }) => {
+    const result = await callRoute(cloudflarePostRoute, `/api/sites/${encodeURIComponent(siteId)}/cloudflare`, { method: "POST", body: remove ? { action: "remove", confirm } : { action: "apply", botFightMode, confirm }, params: { siteId } });
     return result.ok ? text(result.data) : failure(result);
   });
 

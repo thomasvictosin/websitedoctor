@@ -352,6 +352,17 @@ export function fixPlanForIssue(fingerprint: string, diagnostics: unknown): FixP
     if (!plugin || typeof plugin.file !== "string") return { steps: [], title: "Update plugin", skipped: ["The plugin is no longer in the latest diagnostics; sync again."] };
     return pluginUpdateSteps(diagnostics, [plugin.file]);
   }
+  const vulnerable = /^vuln:plugin-([a-z0-9-]+):/.exec(fingerprint);
+  if (vulnerable) {
+    const plugin = plugins.find((item) => typeof item.file === "string" && item.file.split("/")[0] === vulnerable[1]);
+    if (!plugin || typeof plugin.file !== "string") return { steps: [], title: "Fix vulnerable plugin", skipped: ["The plugin is no longer installed."] };
+    const evidence = (record(diagnostics).__issueEvidence ?? {}) as Record<string, unknown>;
+    const fixedIn = typeof evidence.fixedIn === "string" ? evidence.fixedIn : null;
+    if (fixedIn && typeof plugin.newVersion === "string" && compareVersions(plugin.newVersion, fixedIn) >= 0) return pluginUpdateSteps(diagnostics, [plugin.file]);
+    if (fixedIn) return { steps: [], title: "Update vulnerable plugin", skipped: [plugin.source === "wordpress.org" ? `WordPress has not offered version ${fixedIn} yet; sync diagnostics again.` : `Update ${String(plugin.name)} to ${fixedIn} from its vendor.`] };
+    const step = { description: `Deactivate and quarantine ${String(plugin.name)} ${String(plugin.version)}: it has a known vulnerability with no fixed version yet.`, operation: "quarantine_plugin" as const, parameters: { plugin: plugin.file, expectedVersion: String(plugin.version ?? "") } };
+    return isAllowedCleanupStep(step) ? { steps: [step], title: `Remove vulnerable ${String(plugin.name)}`, skipped: [] } : { steps: [], title: "Remove vulnerable plugin", skipped: ["The plugin cannot be removed automatically."] };
+  }
   if (fingerprint.startsWith("wp:integrity:plugin-modified:")) {
     const slug = fingerprint.replace(/^wp:integrity:plugin-modified:/, "");
     const integrity = record(record(diagnostics).integrity);

@@ -715,19 +715,22 @@ function awd_issue_is_fixable(array $issue): bool
 {
     $fingerprint = (string) ($issue['fingerprint'] ?? '');
     return ($issue['status'] ?? '') !== 'resolved'
-        && (str_starts_with($fingerprint, 'wp:plugin-update:') || str_starts_with($fingerprint, 'wp:integrity:plugin-modified:'));
+        && (str_starts_with($fingerprint, 'wp:plugin-update:') || str_starts_with($fingerprint, 'wp:integrity:plugin-modified:') || str_starts_with($fingerprint, 'vuln:plugin-'));
 }
 
 function awd_render_fix_button(array $issue): void
 {
     if (!awd_issue_is_fixable($issue) || !preg_match('/^[A-Za-z0-9_-]{1,64}$/', (string) ($issue['id'] ?? ''))) return;
     $update = str_starts_with((string) $issue['fingerprint'], 'wp:plugin-update:');
-    echo '<form class="awd-inline-form" method="post" action="' . esc_url(admin_url('admin-post.php')) . '" onsubmit="return confirm(' . esc_attr(wp_json_encode($update
+    $vulnerable = str_starts_with((string) $issue['fingerprint'], 'vuln:plugin-');
+    echo '<form class="awd-inline-form" method="post" action="' . esc_url(admin_url('admin-post.php')) . '" onsubmit="return confirm(' . esc_attr(wp_json_encode($vulnerable
+        ? 'Fix this vulnerable plugin now? If a fixed version is available it is installed and verified (the old version is put back if the site breaks); if no fix exists yet, the plugin is deactivated and moved to the quarantine.'
+        : ($update
         ? 'Update this plugin now? The current version is kept in the quarantine and put back automatically if the update fails its checks or breaks the site.'
-        : 'Reinstall this plugin from WordPress.org? The current files are kept in the quarantine and can be restored.')) . ');">';
+        : 'Reinstall this plugin from WordPress.org? The current files are kept in the quarantine and can be restored.'))) . ');">';
     echo '<input type="hidden" name="action" value="awd_fix_issue"><input type="hidden" name="issue_id" value="' . esc_attr((string) $issue['id']) . '">';
     wp_nonce_field('awd_fix_issue_' . $issue['id']);
-    submit_button($update ? 'Fix: update plugin now' : 'Fix: reinstall plugin now', 'primary', 'submit', false);
+    submit_button($vulnerable ? 'Fix vulnerability now' : ($update ? 'Fix: update plugin now' : 'Fix: reinstall plugin now'), 'primary', 'submit', false);
     echo '</form>';
 }
 

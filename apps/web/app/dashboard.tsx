@@ -4,7 +4,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import { HostingManager } from "./hosting-manager";
 import { BackupsManager } from "./backups-manager";
 import { CleanupManager } from "./cleanup-manager";
-import { ProtectionManager } from "./protection-manager";
+import { CloudflarePanel, ProtectionManager } from "./protection-manager";
 import { McpAccessManager } from "./mcp-access-manager";
 import { parseAssistantRepairPermissionCommand } from "@/lib/repair-assistant-intent";
 
@@ -698,6 +698,7 @@ export default function Home() {
     if (issue.status === "resolved") return null;
     if (issue.fingerprint.startsWith("wp:plugin-update:")) return { label: "Fix: update plugin", confirm: "Update this plugin on the live site now? It is downloaded from WordPress.org, checked against the official checksums, and the previous version is put back automatically if the site breaks." };
     if (issue.fingerprint.startsWith("wp:integrity:plugin-modified:")) return { label: "Fix: reinstall plugin", confirm: "Reinstall this plugin from WordPress.org? Its current, modified files are kept in the quarantine and can be restored." };
+    if (issue.fingerprint.startsWith("vuln:plugin-")) return { label: "Fix vulnerability", confirm: "Fix this vulnerable plugin on the live site? If a fixed version is available it is installed from WordPress.org and verified (the old version is put back if the site breaks); if no fix exists yet, the plugin is deactivated and moved to the quarantine, where it can be restored." };
     if (/^(?:wp:)?(?:security|integrity):/.test(issue.fingerprint)) return { label: "Fix: open cleanup", confirm: null };
     return null;
   }
@@ -1693,7 +1694,7 @@ function WebsiteDetail({
   };
   if (tab === "backups") return <BackupsManager websiteId={site.id} />;
   if (tab === "cleanup") return <CleanupManager websiteId={site.id} />;
-  if (tab === "protection") return <ProtectionManager websiteId={site.id} />;
+  if (tab === "protection") return <><ProtectionManager websiteId={site.id} /><CloudflarePanel websiteId={site.id} /></>;
   if (tab === "overview") {
     return <div className="detail-content">
       <div className="detail-metrics">

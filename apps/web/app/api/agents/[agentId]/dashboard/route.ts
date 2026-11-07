@@ -21,7 +21,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ agen
     db.wordPressAgent.findUnique({ where: { id: agentId }, select: { diagnostics: true, lastSeenAt: true, wpVersion: true, phpVersion: true, pluginVersion: true } }),
     db.issue.findMany({
       // Plugin findings plus the outside security probe, which is the evidence a compromised site cannot hide.
-      where: { websiteId: auth.agent.websiteId, source: { in: ["wordpress_plugin", "security_probe"] } },
+      where: { websiteId: auth.agent.websiteId, source: { in: ["wordpress_plugin", "security_probe", "vulnerability_feed"] } },
       orderBy: [{ status: "asc" }, { lastSeenAt: "desc" }],
       take: 50,
       select: {

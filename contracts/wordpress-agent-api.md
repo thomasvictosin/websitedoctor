@@ -110,6 +110,8 @@ Plugin 0.4.0 adds `plugins[].source` (`wordpress.org` or `other`) and `plugins[]
 
 Plugin 0.5.0 adds `hardening` (per measure: `id`, `enabled`, `verified` true/false/null, `detail`, `changedAt`) to diagnostics, and `GET /tasks` returns `alerts: [{ id, title, body }]`, which the plugin emails once each to the site administrator.
 
+Plugin 0.6.0 shows Fix buttons for `vuln:plugin-<slug>:<id>` findings from the central vulnerability feed; `POST /fix` resolves them to `update_plugin` when the offered update contains the fix, otherwise to `quarantine_plugin`.
+
 Step operations and parameters (all strings): `quarantine_file {path, expectedSha256}`, `restore_core_file {path, officialMd5, expectedCurrentSha256 | "missing"}`, `remove_htaccess_rules {expectedSha256, lines: "2,3"}`, `quarantine_plugin {plugin, expectedVersion}`, `demote_user {login, expectedRole: "administrator"}`, `rotate_salts {}`, `purge_page_cache {}`, `purge_quarantine {runId}`, `update_plugin {plugin, expectedVersion, targetVersion}`, `reinstall_plugin {plugin, expectedVersion}`, `install_plugin {slug, version, activate: "yes" | "no"}`, `set_hardening {measure, state: "on" | "off"}`. The boundary and invariants are in [docs/hosting-write-safety.md](../docs/hosting-write-safety.md#wordpress-agent-compromise-cleanup-approved-7-november-2026).
 
 ## Plugin dashboard and shared repair decisions

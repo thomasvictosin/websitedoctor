@@ -29,7 +29,11 @@ export function isCleanupProposal(proposal: unknown) {
 }
 
 export class CleanupError extends Error {
-  constructor(message: string, readonly status: number) { super(message); }
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
 }
 
 export async function loadCleanupPlan(websiteId: string, now = new Date()) {
@@ -352,13 +356,13 @@ async function recordMaintenanceReport(
 /** One-click fix for a finding (plugin update or reinstall). */
 export async function startIssueFix(input: { issueId: string; websiteId: string; organizationId: string; actor: CleanupActor }) {
   const [issue, agent] = await Promise.all([
-    db.issue.findFirst({ where: { id: input.issueId, websiteId: input.websiteId }, select: { id: true, fingerprint: true, status: true } }),
+    db.issue.findFirst({ where: { id: input.issueId, websiteId: input.websiteId }, select: { id: true, fingerprint: true, status: true, evidence: true } }),
     db.wordPressAgent.findFirst({ where: { websiteId: input.websiteId, revokedAt: null }, select: { diagnostics: true, lastSeenAt: true } }),
   ]);
   if (!issue) throw new CleanupError("Issue not found.", 404);
   if (issue.status === "resolved") throw new CleanupError("This issue is already resolved.", 409);
   await requireMaintenancePlugin(agent);
-  const fix = fixPlanForIssue(issue.fingerprint, agent!.diagnostics);
+  const fix = fixPlanForIssue(issue.fingerprint, { ...record(agent!.diagnostics), __issueEvidence: issue.evidence });
   if (!fix) throw new CleanupError("This finding has no one-click fix; follow its recommendation instead.", 400);
   if (!fix.steps.length) throw new CleanupError(fix.skipped.join(" ") || "There is nothing to fix.", 409);
   return startCleanup({ websiteId: input.websiteId, organizationId: input.organizationId, planDigest: "fix", include: [], actor: input.actor, explicit: { steps: fix.steps, title: fix.title, issueId: issue.id, mode: "maintenance" } });

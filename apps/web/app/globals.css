@@ -514,3 +514,5 @@ h2 { color: #203747; font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
 .protection-state.off { color: #898da0; }
 .protection-toggle { display: flex; gap: 10px; align-items: flex-start; margin: 10px 0; line-height: 1.45; }
 .protection-alert-body { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; margin: 6px 0 0; }
+.cloudflare-connect { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.cloudflare-connect input { flex: 1 1 260px; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }

@@ -144,7 +144,13 @@ async function fetchText(rawUrl: string, headers: Record<string, string>, reques
       target = next;
       continue;
     }
-    return { statusCode: response.statusCode, finalUrl: target.toString(), redirectedOffOrigin: false, text: decodeBody(response) };
+    const text = decodeBody(response);
+    // An edge challenge (for example Cloudflare Bot Fight Mode) hides the real page: treat it as no evidence, never as "clean".
+    if (String(response.headers["cf-mitigated"] ?? "").toLowerCase() === "challenge"
+      || ((response.statusCode === 403 || response.statusCode === 503) && /<title>\s*(?:Just a moment|Attention Required!)/i.test(text))) {
+      throw new Error(`blocked by an edge challenge (HTTP ${response.statusCode}); the outside check cannot see the real page`);
+    }
+    return { statusCode: response.statusCode, finalUrl: target.toString(), redirectedOffOrigin: false, text };
   }
   throw new Error("Too many redirects.");
 }
