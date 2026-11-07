@@ -7,7 +7,8 @@ export function hashPassword(candidate: string): string {
 
 export function verifyPassword(candidate: unknown, encoded: unknown): boolean {
   if (typeof candidate !== "string" || Buffer.byteLength(candidate) < 12 || typeof encoded !== "string") return false;
-  const [algorithm, salt, expected, extra] = encoded.split("$");
+  const normalized = encoded.replaceAll("\\$", "$");
+  const [algorithm, salt, expected, extra] = normalized.split("$");
   if (algorithm !== "scrypt" || !salt || !expected || extra !== undefined) return false;
   try {
     const saltBytes = Buffer.from(salt, "base64url");
@@ -25,7 +26,7 @@ export function validAdminPassword(candidate: unknown): boolean {
 }
 
 export function authIsConfigured(): boolean {
-  const passwordHash = process.env.ADMIN_PASSWORD_HASH ?? "";
+  const passwordHash = (process.env.ADMIN_PASSWORD_HASH ?? "").replaceAll("\\$", "$");
   const validPasswordHash = /^scrypt\$[A-Za-z0-9_-]{22,}\$[A-Za-z0-9_-]{86}$/.test(passwordHash);
   const secureOriginConfigured = process.env.NODE_ENV !== "production"
     || isSecureApplicationOrigin(process.env.APP_ORIGIN);

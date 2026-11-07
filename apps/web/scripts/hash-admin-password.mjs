@@ -27,7 +27,7 @@ stdin.on("data", (character) => {
     const derived = scryptSync(password, salt, 64);
     password = "";
     const encodedHash = `scrypt$${salt.toString("base64url")}$${derived.toString("base64url")}`;
-    stdout.write(`ADMIN_PASSWORD_HASH="${encodedHash.replaceAll("$", () => "\\$")}"\n`);
+    stdout.write(`ADMIN_PASSWORD_HASH="${encodedHash}"\n`);
     stdout.write("Sign in with the password you just entered, not the hash above.\n");
     return;
   }
