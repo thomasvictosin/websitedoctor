@@ -7,6 +7,7 @@ import { db } from "@/lib/db";
 import { redactApiValue } from "@/lib/redaction";
 import { authorizeRepairExecution } from "@/lib/repair-authorization";
 import { isHostingRepairProposal } from "@/lib/hosting-proposal-policy";
+import { dispatchCleanupTasks } from "@/lib/cleanup-service";
 
 export const runtime = "nodejs";
 
@@ -220,10 +221,17 @@ export async function GET(
       requestedAt: backup.restoreRequestedAt?.toISOString() ?? null,
     }];
   });
-  return NextResponse.json(redactApiValue({
-    tasks,
-    rollbackRequests,
-    manualRecoveryRequests,
-    diagnosticsRequired: !baselineIsValid,
-  }), { headers: { "cache-control": "no-store" } });
+  // Compromise cleanups use their own one-time grant and are delivered separately.
+  // They are not passed through redactApiValue: their SHA-256 target digests
+  // look like tokens to it, and the steps contain no secrets.
+  const cleanupTasks = baselineIsValid ? await dispatchCleanupTasks(agentId, auth.agent.websiteId) : [];
+  return NextResponse.json({
+    ...(redactApiValue({
+      tasks,
+      rollbackRequests,
+      manualRecoveryRequests,
+      diagnosticsRequired: !baselineIsValid,
+    }) as Record<string, unknown>),
+    cleanupTasks,
+  }, { headers: { "cache-control": "no-store" } });
 }

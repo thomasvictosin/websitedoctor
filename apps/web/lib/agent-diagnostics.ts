@@ -8,6 +8,8 @@ export const integrityReportSchema = z.object({
   status: z.enum(["complete", "partial", "checksums_unavailable"]),
   durationMs: z.number().int().min(0).max(600_000),
   core: z.object({
+    version: z.string().max(40).optional(),
+    locale: z.string().max(20).optional(),
     checksumsAvailable: z.boolean(),
     checkedFiles: z.number().int().min(0).max(100_000),
     modified: pathList,
@@ -31,6 +33,7 @@ export const integrityReportSchema = z.object({
     count: z.number().int().min(0).max(100_000),
     recent: z.array(z.object({ login: z.string().max(60), registeredAt: z.string().datetime({ offset: true }) })).max(20),
   }),
+  fileHashes: z.record(relativePath, z.string().regex(/^[a-f0-9]{64}$/)).refine((value) => Object.keys(value).length <= 150, "Too many file hashes.").optional(),
   truncated: z.boolean(),
 });
 
@@ -43,6 +46,7 @@ export const agentDiagnosticSchema = z.object({
     phpVersion: z.string().max(40),
     memoryLimit: z.string().max(40),
     environmentType: z.enum(["production", "staging", "development", "local"]).optional(),
+    pluginVersion: z.string().regex(/^\d+(\.\d+){1,3}$/).optional(),
     customCssSha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
     debugMode: z.boolean(),
     cronDisabled: z.boolean(),

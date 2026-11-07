@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { HostingManager } from "./hosting-manager";
 import { BackupsManager } from "./backups-manager";
+import { CleanupManager } from "./cleanup-manager";
 import { McpAccessManager } from "./mcp-access-manager";
 import { parseAssistantRepairPermissionCommand } from "@/lib/repair-assistant-intent";
 
@@ -206,7 +207,7 @@ export default function Home() {
   const [pairingCodes, setPairingCodes] = useState<Record<string, { code: string; expiresAt: string }>>({});
   const [activeView, setActiveView] = useState<DashboardView>("dashboard");
   const [selectedWebsiteId, setSelectedWebsiteId] = useState<string | null>(null);
-  const [websiteDetailTab, setWebsiteDetailTab] = useState<"overview" | "diagnostics" | "performance" | "accessibility" | "responsive" | "repair-history" | "backups" | "history" | "settings">("overview");
+  const [websiteDetailTab, setWebsiteDetailTab] = useState<"overview" | "diagnostics" | "performance" | "accessibility" | "responsive" | "repair-history" | "cleanup" | "backups" | "history" | "settings">("overview");
   const [assistantWebsiteId, setAssistantWebsiteId] = useState("");
   const [assistantQuestion, setAssistantQuestion] = useState("");
   const [assistantBusy, setAssistantBusy] = useState(false);
@@ -1191,7 +1192,7 @@ export default function Home() {
             <button className="button ghost" onClick={() => setSelectedWebsiteId(null)}>Close details</button>
           </div>
           <div className="detail-tabs" role="tablist" aria-label="Website detail sections">
-            {(["overview", "diagnostics", "performance", "accessibility", "responsive", "repair-history", "backups", "history", "settings"] as const).map((tab) => (
+            {(["overview", "diagnostics", "performance", "accessibility", "responsive", "repair-history", "cleanup", "backups", "history", "settings"] as const).map((tab) => (
               <button key={tab} role="tab" aria-selected={websiteDetailTab === tab} className={websiteDetailTab === tab ? "active" : ""}
                 onClick={() => setWebsiteDetailTab(tab)}>{tab}</button>
             ))}
@@ -1610,7 +1611,7 @@ function WebsiteDetail({
   websites: Website[];
   issues: Issue[];
   history: Check[] | null;
-  tab: "overview" | "diagnostics" | "performance" | "accessibility" | "responsive" | "repair-history" | "backups" | "history" | "settings";
+  tab: "overview" | "diagnostics" | "performance" | "accessibility" | "responsive" | "repair-history" | "cleanup" | "backups" | "history" | "settings";
   repairs: Array<{ issue: Issue; repair: Issue["repairs"][number] }>;
   busy: string | null;
   onHistory: () => void;
@@ -1629,6 +1630,7 @@ function WebsiteDetail({
     return browser.finding && typeof browser.finding === "object" ? browser.finding as Record<string, unknown> : {};
   };
   if (tab === "backups") return <BackupsManager websiteId={site.id} />;
+  if (tab === "cleanup") return <CleanupManager websiteId={site.id} />;
   if (tab === "overview") {
     return <div className="detail-content">
       <div className="detail-metrics">

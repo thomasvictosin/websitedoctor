@@ -38,6 +38,8 @@ function _get_cron_array(): array { return array($GLOBALS['awd_fixture_cron_time
 function esc_url_raw(string $url, array $protocols = array()): string { return $url; }
 function wp_parse_url(string $url): array|false { return parse_url($url); }
 function untrailingslashit(string $url): string { return rtrim($url, '/'); }
+function wp_generate_password(int $length = 12, bool $special = true, bool $extra = false): string { return substr(bin2hex(random_bytes(32)), 0, $length); }
+function wp_upload_dir($time = null, bool $create = true): array { return $GLOBALS['awd_fixture_uploads'] ?? array(); }
 
 require dirname(__DIR__) . '/ai-website-doctor.php';
 
@@ -242,5 +244,90 @@ foreach (array('integrity:malware-signatures' => 'critical', 'integrity:core-mod
 $clean = awd_integrity_scan(__DIR__ . '/fixtures/wordpress/', null);
 awd_test_assert($clean['status'] === 'checksums_unavailable' && awd_integrity_issues($clean) === array(), 'without checksums the scan must not invent core findings');
 awd_test_assert(isset($diagnostics['integrity']['status']), 'diagnostics must include the integrity report');
+
+// Cleanup operations against a temporary copy of the compromised fixture.
+function awd_test_copy_tree(string $from, string $to): void
+{
+    @mkdir($to, 0755, true);
+    foreach (scandir($from) as $entry) {
+        if ($entry === '.' || $entry === '..') continue;
+        is_dir("$from/$entry") ? awd_test_copy_tree("$from/$entry", "$to/$entry") : copy("$from/$entry", "$to/$entry");
+    }
+}
+$work = sys_get_temp_dir() . '/awd-cleanup-test-' . bin2hex(random_bytes(4));
+awd_test_copy_tree(rtrim($compromised_root, '/'), $work . '/site');
+$site = realpath($work . '/site') . '/';
+mkdir($work . '/quarantine', 0700);
+$GLOBALS['awd_fixture_uploads'] = array('basedir' => $site . 'wp-content/uploads');
+$official_index = "<?php\ndefine('WP_USE_THEMES', true);\nrequire __DIR__ . '/wp-blog-header.php';\n";
+$checksums = array('index.php' => md5($official_index), 'wp-includes/version.php' => md5_file($site . 'wp-includes/version.php'), 'wp-admin/about.php' => md5_file($site . 'wp-admin/about.php'));
+$scan = awd_integrity_scan($site, $checksums);
+$hashes = (array) $scan['fileHashes'];
+awd_test_assert(isset($hashes['index.php'], $hashes['wp-includes/class-wp-cache-loader.php'], $hashes['robots.txt']), 'integrity report must hash listed files');
+awd_test_assert($scan['core']['locale'] === '' && array_key_exists('version', $scan['core']), 'integrity report must carry version and locale fields');
+$htaccess_lines = implode(',', array_column($scan['htaccess']['suspiciousLines'], 'line'));
+$steps = array(
+    array('operation' => 'quarantine_file', 'parameters' => array('path' => 'wp-includes/class-wp-cache-loader.php', 'expectedSha256' => $hashes['wp-includes/class-wp-cache-loader.php'])),
+    array('operation' => 'quarantine_file', 'parameters' => array('path' => 'wp-content/uploads/2026/11/thumb.php', 'expectedSha256' => $hashes['wp-content/uploads/2026/11/thumb.php'])),
+    array('operation' => 'quarantine_file', 'parameters' => array('path' => 'robots.txt', 'expectedSha256' => $hashes['robots.txt'])),
+    array('operation' => 'quarantine_file', 'parameters' => array('path' => 'sitemap-1.xml', 'expectedSha256' => str_repeat('0', 64))),
+    array('operation' => 'restore_core_file', 'parameters' => array('path' => 'index.php', 'officialMd5' => md5($official_index), 'expectedCurrentSha256' => $hashes['index.php'])),
+    array('operation' => 'remove_htaccess_rules', 'parameters' => array('expectedSha256' => $scan['htaccess']['sha256'], 'lines' => $htaccess_lines)),
+);
+foreach ($steps as $step) awd_test_assert(awd_cleanup_step_is_valid($step), 'cleanup step must validate: ' . $step['operation']);
+foreach (array(
+    array('operation' => 'quarantine_file', 'parameters' => array('path' => '../etc/passwd', 'expectedSha256' => str_repeat('a', 64))),
+    array('operation' => 'quarantine_file', 'parameters' => array('path' => '/etc/passwd', 'expectedSha256' => str_repeat('a', 64))),
+    array('operation' => 'quarantine_file', 'parameters' => array('path' => 'x.php', 'expectedSha256' => 'short')),
+    array('operation' => 'run_php', 'parameters' => array()),
+    array('operation' => 'quarantine_plugin', 'parameters' => array('plugin' => 'ai-website-doctor/ai-website-doctor.php', 'expectedVersion' => '0.3.0')),
+    array('operation' => 'rotate_salts', 'parameters' => array('extra' => 'x')),
+    array('operation' => 'demote_user', 'parameters' => array('login' => 'x', 'expectedRole' => 'editor')),
+) as $bad) awd_test_assert(!awd_cleanup_step_is_valid($bad), 'unsafe cleanup step must be rejected: ' . $bad['operation']);
+$fetches = 0;
+$results = awd_cleanup_execute_steps('fixture-run-0001', 'repair-1', $steps, array(
+    'root' => $site, 'quarantineDir' => $work . '/quarantine', 'checksums' => $checksums, 'wpVersion' => '9.9',
+    'fetchCoreFile' => static function ($version, $path) use ($official_index, &$fetches) { $fetches++; return $official_index; },
+));
+$statuses = array_column($results, 'status');
+awd_test_assert($statuses === array('applied', 'applied', 'applied', 'failed', 'applied', 'applied'), 'cleanup statuses must match: ' . implode(',', $statuses));
+awd_test_assert(!file_exists($site . 'wp-includes/class-wp-cache-loader.php') && !file_exists($site . 'robots.txt'), 'quarantined files must leave the site');
+awd_test_assert(file_exists($site . 'sitemap-1.xml'), 'a file whose digest changed must be left in place');
+awd_test_assert(file_get_contents($site . 'index.php') === $official_index && $fetches === 1, 'core index.php must be restored from the official copy');
+$clean_htaccess = file_get_contents($site . '.htaccess');
+awd_test_assert(!str_contains($clean_htaccess, 'HTTP_USER_AGENT') && !str_contains($clean_htaccess, 'wp-cache.php') && !str_contains($clean_htaccess, 'auto_prepend_file'), 'injected rewrite rule groups must be removed');
+awd_test_assert(str_contains($clean_htaccess, '# BEGIN WordPress') && str_contains($clean_htaccess, 'RewriteRule . /index.php [L]'), 'WordPress block must be preserved');
+$rescan = awd_integrity_scan($site, $checksums);
+awd_test_assert($rescan['core']['modified'] === array() && $rescan['suspiciousFiles'] === array() && $rescan['uploadsPhp'] === array() && $rescan['htaccess']['suspiciousLines'] === array(), 'rescan after cleanup must be clean');
+// Quarantine contents are inert copies outside the site.
+awd_test_assert(count(glob($work . '/quarantine/fixture-run-0001/*.bin')) === 5, 'every change must leave an undo copy in the quarantine');
+// Restore with a conflict: a new robots.txt was written after the cleanup.
+file_put_contents($site . 'robots.txt', "User-agent: *\n");
+$restored = awd_cleanup_restore_run('fixture-run-0001', array('root' => $site));
+$restore_status = array_column($restored, 'status', 'operation');
+awd_test_assert(file_get_contents($site . '.htaccess') === file_get_contents($compromised_root . '.htaccess'), 'restore must put back the exact previous .htaccess');
+awd_test_assert(file_exists($site . 'wp-includes/class-wp-cache-loader.php') && file_get_contents($site . 'index.php') === file_get_contents($compromised_root . 'index.php'), 'restore must put back quarantined and replaced files');
+awd_test_assert(file_get_contents($site . 'robots.txt') === "User-agent: *\n", 'restore must not overwrite a file created after the cleanup');
+awd_test_assert(in_array('conflict', array_column($restored, 'status'), true), 'restore must report the conflict');
+$second_restore = awd_cleanup_restore_run('fixture-run-0001', array('root' => $site));
+awd_test_assert(!in_array('restored', array_column($second_restore, 'status'), true), 'a restore must not be applied twice');
+// Denials.
+awd_test_assert(awd_cleanup_quarantine_denial('index.php', $site, $checksums) !== null, 'core files cannot be quarantined');
+awd_test_assert(awd_cleanup_quarantine_denial('wp-content/themes/fixture/functions.php', $site, $checksums) !== null, 'theme files are not quarantined');
+awd_test_assert(awd_cleanup_quarantine_denial('wp-includes/class-wp-cache-loader.php', $site, $checksums) === null, 'unknown core-directory PHP can be quarantined');
+awd_test_assert(awd_cleanup_quarantine_denial('wp-content/uploads/2026/11/photo.jpg', $site, $checksums) !== null, 'media in uploads cannot be quarantined');
+// Salt rotation rewrites exactly the eight keys.
+$config = "<?php\n";
+foreach (explode(',', AWD_CLEANUP_SALT_KEYS) as $key) $config .= "define( '$key', 'old-$key' );\n";
+$config .= "define('DB_NAME', 'keep');\n";
+$counter = 0;
+$rotated = awd_cleanup_rotate_salts_content($config, static function () use (&$counter) { return 'new-' . (++$counter); });
+awd_test_assert($rotated !== null && !str_contains($rotated, 'old-') && str_contains($rotated, "define('DB_NAME', 'keep');") && $counter === 8, 'salt rotation must replace exactly the eight keys');
+awd_test_assert(awd_cleanup_rotate_salts_content($config . "define('AUTH_KEY', 'dup');\n", static function () { return 'x'; }) === null, 'duplicate salt defines must refuse rotation');
+// Purge removes the run's quarantine permanently.
+update_option(AWD_CLEANUP_DIR_OPTION, $work . '/quarantine');
+$purge = awd_cleanup_op_purge_quarantine(array('runId' => 'fixture-run-0001'), array());
+awd_test_assert($purge['status'] === 'applied' && !is_dir($work . '/quarantine/fixture-run-0001'), 'purge must delete the run quarantine');
+awd_cleanup_remove_tree($work);
 
 echo "WordPress plugin tests passed.\n";

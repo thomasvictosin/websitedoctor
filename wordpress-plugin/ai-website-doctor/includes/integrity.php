@@ -256,11 +256,28 @@ function awd_integrity_scan(string $root, ?array $checksums, array $context = ar
         $robots = array('present' => true, 'bytes' => strlen($content), 'sitemapEntries' => count($matches[1] ?? array()));
     }
 
+    // Content digests bind a later cleanup approval to the exact file that was reviewed.
+    $file_hashes = array();
+    $hash_paths = array_merge(
+        array_column($suspicious, 'path'), $modified, $unknown_php, $uploads_php, $mu_plugins, $content_root_php, $root_files,
+        is_file($root . 'robots.txt') ? array('robots.txt') : array()
+    );
+    foreach (array_unique($hash_paths) as $relative) {
+        if (count($file_hashes) >= 150) { $truncated = true; break; }
+        $path = $root . $relative;
+        if (is_file($path) && !is_link($path) && is_readable($path)) {
+            $digest = @hash_file('sha256', $path);
+            if (is_string($digest)) $file_hashes[$relative] = $digest;
+        }
+    }
+
     return array(
         'scannedAt' => gmdate('c'),
         'status' => !is_array($checksums) ? 'checksums_unavailable' : ($partial ? 'partial' : 'complete'),
         'durationMs' => (int) round((microtime(true) - $started) * 1000),
         'core' => array(
+            'version' => substr((string) ($context['version'] ?? ''), 0, 40),
+            'locale' => substr((string) ($context['locale'] ?? ''), 0, 20),
             'checksumsAvailable' => is_array($checksums),
             'checkedFiles' => $checked,
             'modified' => $modified,
@@ -275,6 +292,7 @@ function awd_integrity_scan(string $root, ?array $checksums, array $context = ar
         'htaccess' => $htaccess,
         'robotsFile' => $robots,
         'admins' => $context['admins'] ?? array('count' => 0, 'recent' => array()),
+        'fileHashes' => (object) $file_hashes,
         'truncated' => $truncated,
     );
 }
@@ -331,6 +349,8 @@ function awd_integrity_report(bool $force = false): array
         'muPluginsDir' => defined('WPMU_PLUGIN_DIR') ? WPMU_PLUGIN_DIR : null,
         'themeDirs' => $theme_dirs,
         'admins' => awd_integrity_admins(),
+        'version' => (string) get_bloginfo('version'),
+        'locale' => function_exists('get_locale') ? (string) get_locale() : 'en_US',
     ));
     update_option(AWD_INTEGRITY_OPTION, $report, false);
     return $report;

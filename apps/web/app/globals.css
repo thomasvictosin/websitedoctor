@@ -495,3 +495,10 @@ h2 { color: #203747; font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
   .repair-state-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .repair-state-grid span { min-width: 0; }
 }
+
+/* Compromise cleanup panel */
+.cleanup-blockers { margin: 12px 0; padding: 12px 14px; border: 1px solid #f1c7c7; border-radius: 10px; background: #fff6f6; color: #8a2b2b; }
+.cleanup-blockers ul { margin: 6px 0 0; padding-left: 18px; }
+.cleanup-steps, .cleanup-optional { margin: 6px 0 14px; padding-left: 20px; line-height: 1.5; overflow-wrap: anywhere; }
+.cleanup-optional { list-style: none; padding-left: 0; }
+.cleanup-optional li { margin: 6px 0; }

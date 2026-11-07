@@ -16,7 +16,7 @@ export async function POST(
   const auth = await authenticateAgent(request, agentId);
   if ("response" in auth) return auth.response;
   if (auth.agent.id !== agentId) return NextResponse.json({ error: "Agent identity mismatch." }, { status: 403 });
-  const body = await readBoundedJson(request, 100_000);
+  const body = await readBoundedJson(request, 120_000);
   if (body === null) return NextResponse.json({ error: "Diagnostic payload is invalid or too large." }, { status: 413 });
   const parsed = agentDiagnosticSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "Diagnostic payload is invalid." }, { status: 400 });
@@ -53,6 +53,7 @@ export async function POST(
       diagnostics: parsed.data,
       wpVersion: parsed.data.site.wpVersion,
       phpVersion: parsed.data.site.phpVersion,
+      ...(parsed.data.site.pluginVersion ? { pluginVersion: parsed.data.site.pluginVersion } : {}),
       lastSeenAt: new Date(),
     },
   });

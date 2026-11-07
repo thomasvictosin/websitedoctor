@@ -28,6 +28,10 @@ Run Next.js commands through the repository-root npm scripts above; they target 
 
 Claude Code and Claude Desktop can diagnose and repair sites through the app's remote MCP server at `/api/mcp`, using a personal token created under **Team → Claude MCP access**. Claude reaches the WordPress plugin only through the central app's existing approval and signed-poll workflow. See [`docs/claude-mcp.md`](./docs/claude-mcp.md).
 
+### Compromise detection and cleanup
+
+Every scheduled check also runs a plain-HTTP security probe that compares what visitors, Googlebot and Google-search visitors receive and inspects robots.txt and the sitemap, so cloaked SEO-spam infections are reported even when the site answers HTTP 200. Plugin 0.2.0+ adds a read-only integrity scan (core checksums, unknown PHP, malware patterns, injected .htaccess rules, recent administrators). Plugin 0.3.0+ can run a one-approval cleanup playbook from the website's **Cleanup** tab, the plugin, or the `get_cleanup_plan`/`start_cleanup` MCP tools; every change is quarantined for restore and verified from outside. Scheduled checks on serverless hosts are driven by `/api/cron/monitor` with `CRON_SECRET`. The write boundary is documented in [docs/hosting-write-safety.md](./docs/hosting-write-safety.md#wordpress-agent-compromise-cleanup-approved-7-november-2026).
+
 ### Optional Google Drive repair snapshots
 
 For each organization, an owner or administrator can connect a dedicated Google account from a website's **Backups** tab. Enable the Google Drive API, create a Google OAuth web client, and configure `GOOGLE_DRIVE_CLIENT_ID` and `GOOGLE_DRIVE_CLIENT_SECRET` in `apps/web/.env`. Add `${APP_ORIGIN}/api/integrations/google-drive/callback` as an authorized redirect URI in Google Cloud; `APP_ORIGIN` must be the exact app origin and use HTTPS in production. Keep `SESSION_SECRET` private and at least 32 bytes: it encrypts both the stored Drive refresh token and repair snapshot content.

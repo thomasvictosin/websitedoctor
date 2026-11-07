@@ -13,6 +13,8 @@ const decideRepairRoute = () => import("@/app/api/repairs/[repairId]/route").the
 const runScanRoute = () => import("@/app/api/sites/[siteId]/check/route").then((module) => module.POST);
 const scanStatusRoute = () => import("@/app/api/sites/[siteId]/scans/[scanId]/route").then((module) => module.GET);
 const securityCheckRoute = () => import("@/app/api/sites/[siteId]/security-check/route").then((module) => module.POST);
+const cleanupGetRoute = () => import("@/app/api/sites/[siteId]/cleanup/route").then((module) => module.GET);
+const cleanupPostRoute = () => import("@/app/api/sites/[siteId]/cleanup/route").then((module) => module.POST);
 const historyRoute = () => import("@/app/api/sites/[siteId]/history/route").then((module) => module.GET);
 const repairPolicyRoute = () => import("@/app/api/sites/[siteId]/repair-authorization/route").then((module) => module.GET);
 
@@ -29,7 +31,8 @@ How the system works:
 - run_security_check fetches the site as a browser, as Googlebot, and as a visitor from Google search, and inspects robots.txt and the sitemap. It detects cloaking (crawlers get a different page), search-referrer redirects, blank 200 pages, and injected spam sitemaps, which an availability check reports as "up". It runs immediately and works on every deployment.
 - A compromised site's own plugin can be tampered with; prefer run_security_check evidence (gathered from outside the site) when judging whether a cleanup worked.
 - You cannot connect to WordPress directly. Repairs reach the plugin only through the central app: propose_repair creates an evidence-backed proposal, and apply_repair approves and queues it. The plugin executes it on its next poll (WP-Cron, traffic-triggered, typically within 5 minutes), records an operation-specific recovery point first, and the central app verifies the result and rolls back on failure.
-- Only allowlisted operations can execute: disable_plugin, switch_theme, update_setting (blogname/blogdescription), replace_post_link, add_scoped_css_rule (staging only). Everything else gets manual guidance. You cannot run code, SQL, shell, or edit files.
+- Only allowlisted operations can execute: disable_plugin, switch_theme, update_setting (blogname/blogdescription), replace_post_link, add_scoped_css_rule (staging only). Everything else gets manual guidance. You cannot run code, SQL, shell, or edit arbitrary files.
+- Hacked sites have a separate compromise cleanup playbook (plugin 0.3.0+): get_cleanup_plan builds an ordered list from the integrity scan and outside check (quarantine malicious/unknown files, restore modified core files from WordPress.org, remove injected .htaccess rules, optionally remove risky plugins or demote unknown admins, rotate salts, purge cache). start_cleanup approves exactly the reviewed plan (bound by planDigest) in one step. The plugin runs it on its next poll, keeps everything it changes in a private quarantine, rescans, and the app verifies from outside. A failed verification keeps the changes and lists what remains. purge_quarantine permanently deletes a verified run's quarantine.
 
 Recommended workflow:
 1. list_websites, then list_issues for the site. When asked about a site's health or security, also run_security_check: a 200 response does not mean the site is healthy.
@@ -66,10 +69,10 @@ export function createWebsiteDoctorMcpServer(principal: RequestPrincipal, origin
   const server = new McpServer({ name: "ai-website-doctor", version: "0.1.0" }, { instructions: INSTRUCTIONS });
 
   /** Invokes an existing route handler as the token's user, so every app safety check applies. */
-  async function callRoute<P extends Record<string, string>>(load: RouteLoader<P>, path: string, options: { method?: string; body?: unknown; params?: P } = {}) {
+  async function callRoute<P extends Record<string, string>>(load: RouteLoader<P>, path: string, options: { method?: string; body?: unknown; params?: P; headers?: Record<string, string> } = {}) {
     const request = new Request(new URL(path, origin), {
       method: options.method ?? "GET",
-      headers: options.body === undefined ? {} : { "content-type": "application/json" },
+      headers: { ...(options.body === undefined ? {} : { "content-type": "application/json" }), ...(options.headers ?? {}) },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
     let handler: RouteHandler<P>;
@@ -299,6 +302,41 @@ export function createWebsiteDoctorMcpServer(principal: RequestPrincipal, origin
     return result.ok ? text(result.data) : failure(result);
   });
 
+  tool("get_cleanup_plan", {
+    title: "Get the compromise cleanup plan",
+    description: "Build the cleanup playbook for a hacked site from its latest integrity scan and security findings: the ordered steps that will run, optional items (risky plugins, recently created administrators) that run only if included, manual follow-ups, warnings, blockers (for example an outdated plugin or a stale scan), recent cleanup runs with their verification, and the planDigest to pass to start_cleanup. Read-only.",
+    inputSchema: { siteId: z.string().min(1).max(64) },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  }, async ({ siteId }) => {
+    const result = await callRoute(cleanupGetRoute, `/api/sites/${encodeURIComponent(siteId)}/cleanup`, { params: { siteId } });
+    return result.ok ? text(result.data) : failure(result);
+  });
+
+  tool("start_cleanup", {
+    title: "Approve and queue the compromise cleanup",
+    description: "Approve the cleanup plan exactly as returned by get_cleanup_plan and queue it for the site's plugin. This changes files and settings on the live site (quarantines files, restores core files, edits .htaccess and wp-config.php salts, which signs everyone out). Show the user the full step list and get their explicit agreement first. Fails if the plan changed since planDigest was read. include lists optional item ids the user chose. Afterwards follow get_repair_status with the returned repairId until verified or failed.",
+    inputSchema: {
+      siteId: z.string().min(1).max(64),
+      planDigest: z.string().regex(/^[a-f0-9]{64}$/),
+      include: z.array(z.string().max(120)).max(60).default([]).describe("Optional item ids from the plan to include."),
+      confirm: z.literal(true).describe("Must be true: the user explicitly approved this cleanup."),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async ({ siteId, planDigest, include, confirm }) => {
+    const result = await callRoute(cleanupPostRoute, `/api/sites/${encodeURIComponent(siteId)}/cleanup`, { method: "POST", body: { action: "start", planDigest, include, confirm }, params: { siteId }, headers: { "x-awd-interface": "mcp" } });
+    return result.ok ? text(result.data) : failure(result);
+  });
+
+  tool("purge_quarantine", {
+    title: "Permanently delete a verified cleanup's quarantine",
+    description: "Queue permanent deletion of the files a verified cleanup run quarantined. After this the run can no longer be restored. Only allowed for runs with status verified. Ask the user first.",
+    inputSchema: { siteId: z.string().min(1).max(64), repairId: z.string().min(1).max(64), confirm: z.literal(true) },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async ({ siteId, repairId, confirm }) => {
+    const result = await callRoute(cleanupPostRoute, `/api/sites/${encodeURIComponent(siteId)}/cleanup`, { method: "POST", body: { action: "purge", repairId, confirm }, params: { siteId }, headers: { "x-awd-interface": "mcp" } });
+    return result.ok ? text(result.data) : failure(result);
+  });
+
   tool("get_scan_status", {
     title: "Get scan status",
     description: "Return the status and results of a scan queued with run_scan.",
@@ -364,6 +402,12 @@ export function createWebsiteDoctorMcpServer(principal: RequestPrincipal, origin
       const repair = asArray(issue.repairs).map(asRecord).find((item) => item.id === repairId);
       if (repair) return text({ issue: { issueId: issue.id, title: issue.title, status: issue.status, website: issue.website }, ...repairSummary(repair), proposal: repair.proposal, events: repair.events, executions: repair.executions, verificationResults: repair.verificationResults });
     }
+    // Cleanup runs can exist without an anchor issue.
+    const unanchored = await db.repairProposal.findFirst({
+      where: { id: repairId, issueId: null, website: { organization: { members: { some: { userId: principal.userId } } } } },
+      include: { website: { select: { id: true, name: true, url: true } }, events: { orderBy: { createdAt: "asc" } }, executions: { orderBy: { createdAt: "asc" } }, verificationResults: { orderBy: { createdAt: "asc" } } },
+    });
+    if (unanchored) return text({ issue: null, website: unanchored.website, ...repairSummary(unanchored as unknown as Json), proposal: unanchored.proposal, events: unanchored.events, executions: unanchored.executions, verificationResults: unanchored.verificationResults });
     return text({ error: "Repair not found in your organization." }, true);
   });
 

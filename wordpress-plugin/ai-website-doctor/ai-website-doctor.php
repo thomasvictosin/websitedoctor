@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AI Website Doctor
  * Description: Connects this WordPress site to a locally hosted AI Website Doctor for diagnostics and explicitly approved repairs.
- * Version: 0.2.0
+ * Version: 0.3.0
  * Requires at least: 6.2
  * Requires PHP: 8.0
  * License: GPL-2.0-or-later
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('AWD_VERSION', '0.2.0');
+define('AWD_VERSION', '0.3.0');
 define('AWD_OPTION', 'ai_website_doctor_settings');
 define('AWD_RECOVERY_OPTION', 'ai_website_doctor_recovery_points');
 define('AWD_SYNC_OPTION', 'ai_website_doctor_sync_state');
@@ -23,6 +23,7 @@ define('AWD_CRON_HISTORY_OPTION', 'ai_website_doctor_cron_history');
 define('AWD_CONFLICT_REPORT_OPTION', 'ai_website_doctor_staging_conflict_report');
 
 require_once __DIR__ . '/includes/integrity.php';
+require_once __DIR__ . '/includes/cleanup.php';
 
 // Observe task outcomes without invoking or disabling customer callbacks.
 add_action('init', 'awd_register_cron_observers', PHP_INT_MAX);
@@ -468,6 +469,7 @@ function awd_render_admin_page(): void
                 <?php submit_button('Disconnect agent', 'delete', 'submit', false); ?>
             </form>
 
+            <?php awd_render_cleanup_section($settings); ?>
             <h2>Approved repair proposals</h2>
             <?php awd_render_pending_repairs($settings); ?>
             <h2>Central issues, AI analysis, and repair history</h2>
@@ -609,7 +611,7 @@ function awd_central_request(string $url, string $method, array $payload, string
     $body = '';
     $args = array(
         'method' => $method,
-        'timeout' => str_ends_with((string) wp_parse_url($url, PHP_URL_PATH), '/executions') ? 180 : 15,
+        'timeout' => preg_match('#/(?:executions|cleanup-executions)$#', (string) wp_parse_url($url, PHP_URL_PATH)) ? 180 : (str_ends_with((string) wp_parse_url($url, PHP_URL_PATH), '/cleanup') ? 60 : 15),
         'redirection' => 0,
         'reject_unsafe_urls' => true,
         'sslverify' => true,
@@ -908,6 +910,14 @@ function awd_poll_central(): void
     }
     $body = json_decode(wp_remote_retrieve_body($response), true);
     $tasks = is_array($body) && isset($body['tasks']) && is_array($body['tasks']) ? $body['tasks'] : array();
+    // A queued compromise cleanup takes precedence and runs alone in this poll.
+    $cleanup_tasks = is_array($body) && isset($body['cleanupTasks']) && is_array($body['cleanupTasks']) ? $body['cleanupTasks'] : array();
+    foreach ($cleanup_tasks as $cleanup_task) {
+        if (!is_array($cleanup_task) || empty($cleanup_task['executeOnPoll'])) continue;
+        $outcome = awd_cleanup_execute_task($settings, $cleanup_task);
+        error_log('[AI Website Doctor] Cleanup ' . sanitize_text_field((string) ($cleanup_task['repairId'] ?? '')) . ': ' . $outcome['message']);
+        return;
+    }
     foreach ($tasks as $task) {
         if (!is_array($task) || empty($task['executeOnPoll']) || empty($task['repairId']) || empty($task['authorizationGrantId'])) {
             continue;
@@ -1082,6 +1092,7 @@ function awd_collect_diagnostics(array $settings): array
             'phpVersion' => PHP_VERSION,
             'memoryLimit' => defined('WP_MEMORY_LIMIT') ? (string) WP_MEMORY_LIMIT : (string) ini_get('memory_limit'),
             'environmentType' => function_exists('wp_get_environment_type') ? wp_get_environment_type() : 'production',
+            'pluginVersion' => AWD_VERSION,
             'customCssSha256' => function_exists('wp_get_custom_css')
                 ? hash('sha256', (string) wp_get_custom_css((string) $theme->get_stylesheet()))
                 : null,

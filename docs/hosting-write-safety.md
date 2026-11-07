@@ -6,6 +6,33 @@ Hosting repair proposals are review records only. The current SFTP adapter perfo
 
 SFTP host-key pinning and DNS validation authenticate the connection endpoint; configured-root checks and symlink checks constrain the requested path at the time of inspection. They do not bind later file operations to the same filesystem objects. A remote user or process can replace a checked path component between `lstat` and a subsequent SFTP write. SFTP does not provide the descriptor-relative, no-follow path traversal required to close that race, so adding another pre-write check would not make writes safe.
 
+## WordPress agent compromise cleanup (approved 7 November 2026)
+
+The site owner decided that the WordPress plugin may change files to clean up a compromised site. This is a separate, narrower boundary than remote hosting writes: the plugin already runs inside the site as the web-server user, so no new credential or remote write path is created. It applies only to the compromise cleanup playbook (plugin 0.3.0+); hosting adapters remain read-only and the rules below for them are unchanged.
+
+Allowed operations, each bound to evidence the owner reviewed:
+
+| Operation | Target and precondition | Undo data kept |
+|---|---|---|
+| `quarantine_file` | An unknown file in the site root, an executable file in `wp-admin`/`wp-includes`/uploads or directly in `wp-content`, or a must-use plugin; never a core file, `wp-config.php`, `.htaccess`, or plugin/theme code. SHA-256 must equal the reviewed digest. | The file itself, moved (not copied) into the quarantine |
+| `restore_core_file` | A path in the WordPress.org checksum list for the installed version. The central app fetches the official MD5 independently; the site's own list must agree; the downloaded file from `core.svn.wordpress.org` must match it; the current file must match the reviewed SHA-256. | Previous bytes |
+| `remove_htaccess_rules` | Only lines the integrity analyzer flags outside `# BEGIN/END WordPress`, expanded to whole rewrite rules (conditions plus their rule) so a condition is never removed alone. Whole-file SHA-256 must match. | Previous file |
+| `quarantine_plugin` | An installed plugin at the reviewed version; never AI Website Doctor. Offered as an opt-in only. | Plugin directory and its active state |
+| `demote_user` | A current administrator, never the signed-in user or the last administrator. Opt-in only. | Roles and password hash |
+| `rotate_salts` | `wp-config.php` defining each of the eight keys exactly once. | Previous file |
+| `purge_page_cache` | Known cache plugins' purge functions. | None (no state to restore) |
+| `purge_quarantine` | Permanently deletes one run's quarantine; only offered after that run verified. | None: irreversible by design |
+
+Invariants:
+
+- **One approval covers exactly the reviewed list.** The plan digest binds every step, path, digest and optional choice; a changed scan invalidates the approval. The grant is a one-time `RepairApproval` with method `compromise_cleanup`, consumed when dispatched. It can never authorize a normal repair (its operations are outside the repair allowlist, so `authorizeRepairExecution` reports UNSUPPORTED), and normal grants cannot authorize a cleanup.
+- **The plugin revalidates everything** (shape, path confinement under the real site root, no symlinked components, digests) immediately before each change. Writes go to an exclusive temporary file in the same directory followed by `rename`; results are re-read and verified.
+- **Undo before change.** The quarantine lives above the web root when that directory is writable, otherwise in a randomly named `wp-content` directory with deny rules; stored files have a `.bin` name and are never executable. Restoring a run reverses only steps whose target still has the state the cleanup left, so later edits are kept and reported as conflicts.
+- **Verification from outside.** After the run the plugin rescans and syncs, and the central app re-checks the site as a browser, Googlebot and a search visitor. A run is `verified` only when every step applied, no critical or high integrity finding remains, and the outside check is clean.
+- **No automatic rollback after a failed verification.** Rolling back a partial cleanup would reinstall malware, so changes are kept and the remaining findings are reported. Restore is an explicit administrator action in the plugin.
+
+Accepted residual risk: the plugin's check-then-rename is not compare-and-swap (see the feasibility spike below), and code running on a compromised site can interfere with the plugin itself. Both are accepted for this playbook because the competing writer is the malware being removed, every change has a stored undo copy, and success is judged from outside the site. A write that is immediately overwritten again is reported as a failure ("something on the server is rewriting it").
+
 ## Eligible future adapter
 
 A remote write adapter must use either a provider API that documents equivalent race-safe conditional file operations, or a separately installed host-side agent. Generic SSH command execution and SFTP writes are not acceptable substitutes.
