@@ -5,9 +5,9 @@ The app uses PostgreSQL through Prisma, so Supabase can host the application dat
 ## Create and connect a project
 
 1. Create a new Supabase project in the region nearest the application server. Choose a plan and database password; store the password in a password manager.
-2. Open **Connect** in the project dashboard and copy the **Session pooler** URL to the server's `DATABASE_URL` environment variable.
-3. Copy **Direct connection** to `DIRECT_URL` for Prisma schema commands when the runner can reach that address. Direct connections require IPv6 or the Supabase IPv4 add-on. If direct connectivity is unavailable, set `DIRECT_URL` to the session-pooler URL.
-4. Keep `DATABASE_URL` in session mode (port 5432) for the current long-running Node app. The application uses PostgreSQL advisory locks while serializing repair permissions and dispatch. Transaction pool mode (port 6543) does not preserve session-level advisory locks between statements.
+2. For Vercel or another serverless host, open **Connect** and copy the **Transaction pooler** URL (port `6543`) to `DATABASE_URL`. Serverless functions create separate client pools, so the app limits each Vercel instance to one PostgreSQL client and relies on Supavisor to multiplex connections.
+3. Copy **Direct connection** to `DIRECT_URL` for Prisma schema commands when the runner can reach that address. Direct connections require IPv6 or the Supabase IPv4 add-on. If direct connectivity is unavailable for CLI commands, use the session pooler (port `5432`) for `DIRECT_URL`.
+4. Transaction mode does not preserve session-level state between statements. The app's advisory locks use `pg_advisory_xact_lock` inside database transactions, so those locks are scoped to each transaction.
 5. Configure these variables only on the application server/CI environment. Never expose database credentials or Supabase secret/service-role keys to browser code.
 
 For the local Supabase development project, keep Docker Compose PostgreSQL as the default, or set both URLs to the Supabase project explicitly. Do not reuse a production URL in a local `.env` file.

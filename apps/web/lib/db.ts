@@ -7,6 +7,9 @@ const globalForPrisma = globalThis as unknown as {
 
 const adapter = new PrismaPg({
   connectionString: process.env.DATABASE_URL,
+  // Each Vercel function instance has its own pool. Keep it small and let
+  // Supabase's transaction pooler multiplex those clients across instances.
+  ...(process.env.VERCEL === "1" ? { max: 1 } : {}),
 });
 
 export const db =
