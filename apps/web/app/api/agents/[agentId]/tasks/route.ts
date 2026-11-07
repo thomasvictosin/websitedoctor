@@ -8,6 +8,7 @@ import { redactApiValue } from "@/lib/redaction";
 import { authorizeRepairExecution } from "@/lib/repair-authorization";
 import { isHostingRepairProposal } from "@/lib/hosting-proposal-policy";
 import { dispatchCleanupTasks } from "@/lib/cleanup-service";
+import { recentSiteAlerts } from "@/lib/protection";
 
 export const runtime = "nodejs";
 
@@ -225,6 +226,8 @@ export async function GET(
   // They are not passed through redactApiValue: their SHA-256 target digests
   // look like tokens to it, and the steps contain no secrets.
   const cleanupTasks = baselineIsValid ? await dispatchCleanupTasks(agentId, auth.agent.websiteId) : [];
+  // Alerts the plugin emails to the site administrator (each id once).
+  const alerts = (await recentSiteAlerts(auth.agent.websiteId, new Date(Date.now() - 48 * 60 * 60_000))).map(({ id, title, body }) => ({ id, title, body }));
   return NextResponse.json({
     ...(redactApiValue({
       tasks,
@@ -233,5 +236,6 @@ export async function GET(
       diagnosticsRequired: !baselineIsValid,
     }) as Record<string, unknown>),
     cleanupTasks,
+    alerts: redactApiValue(alerts),
   }, { headers: { "cache-control": "no-store" } });
 }

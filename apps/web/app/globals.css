@@ -504,3 +504,13 @@ h2 { color: #203747; font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
 .cleanup-optional li { margin: 6px 0; }
 .compromise-alert { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; justify-content: space-between; margin: 18px 0 0; padding: 16px 18px; border: 1px solid #f1c7c7; border-radius: 12px; background: #fff6f6; color: #8a2b2b; }
 .compromise-alert p { margin: 4px 0 0; color: #6f3131; overflow-wrap: anywhere; }
+.protection-list { list-style: none; margin: 10px 0 16px; padding: 0; }
+.protection-list li { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.protection-list li > div { display: grid; gap: 3px; min-width: 0; flex: 1 1 260px; }
+.protection-list small { color: #6d7085; overflow-wrap: anywhere; }
+.protection-state { font-size: 12px; font-weight: 700; }
+.protection-state.on { color: #1f7a4d; }
+.protection-state.warn { color: #9a5b00; }
+.protection-state.off { color: #898da0; }
+.protection-toggle { display: flex; gap: 10px; align-items: flex-start; margin: 10px 0; line-height: 1.45; }
+.protection-alert-body { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; margin: 6px 0 0; }

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AI Website Doctor
  * Description: Connects this WordPress site to a locally hosted AI Website Doctor for diagnostics and explicitly approved repairs.
- * Version: 0.4.0
+ * Version: 0.5.0
  * Requires at least: 6.2
  * Requires PHP: 8.0
  * License: GPL-2.0-or-later
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('AWD_VERSION', '0.4.0');
+define('AWD_VERSION', '0.5.0');
 define('AWD_OPTION', 'ai_website_doctor_settings');
 define('AWD_RECOVERY_OPTION', 'ai_website_doctor_recovery_points');
 define('AWD_SYNC_OPTION', 'ai_website_doctor_sync_state');
@@ -25,6 +25,8 @@ define('AWD_CONFLICT_REPORT_OPTION', 'ai_website_doctor_staging_conflict_report'
 require_once __DIR__ . '/includes/integrity.php';
 require_once __DIR__ . '/includes/cleanup.php';
 require_once __DIR__ . '/includes/plugin-maintenance.php';
+require_once __DIR__ . '/includes/hardening.php';
+require_once __DIR__ . '/includes/alerts.php';
 
 // Observe task outcomes without invoking or disabling customer callbacks.
 add_action('init', 'awd_register_cron_observers', PHP_INT_MAX);
@@ -471,6 +473,7 @@ function awd_render_admin_page(): void
             </form>
 
             <?php awd_render_cleanup_section($settings); ?>
+            <?php awd_render_hardening_section(); ?>
             <h2>Approved repair proposals</h2>
             <?php awd_render_pending_repairs($settings); ?>
             <h2>Central issues, AI analysis, and repair history</h2>
@@ -712,6 +715,7 @@ function awd_send_diagnostics()
     $settings = awd_settings();
     $diagnostics = awd_collect_diagnostics($settings);
     update_option('ai_website_doctor_last_local_diagnostics', $diagnostics, false);
+    awd_alerts_process_findings((array) ($diagnostics['issues'] ?? array()));
     $result = awd_authenticated_request($settings, '/diagnostics', 'POST', $diagnostics);
     $state = get_option(AWD_SYNC_OPTION, array());
     $state = is_array($state) ? $state : array();
@@ -913,6 +917,7 @@ function awd_poll_central(): void
     }
     $body = json_decode(wp_remote_retrieve_body($response), true);
     $tasks = is_array($body) && isset($body['tasks']) && is_array($body['tasks']) ? $body['tasks'] : array();
+    if (is_array($body) && isset($body['alerts']) && is_array($body['alerts'])) awd_alerts_process_central($body['alerts']);
     // A queued compromise cleanup takes precedence and runs alone in this poll.
     $cleanup_tasks = is_array($body) && isset($body['cleanupTasks']) && is_array($body['cleanupTasks']) ? $body['cleanupTasks'] : array();
     foreach ($cleanup_tasks as $cleanup_task) {
@@ -1089,6 +1094,8 @@ function awd_collect_diagnostics(array $settings): array
         if (count($issues) >= 50) {
             break;
         }
+        // The update cache can outlive a plugin that was removed.
+        if (!isset($all_plugins[$file])) continue;
         $issues[] = array(
             'fingerprint' => 'plugin-update:' . substr(hash('sha256', (string) $file), 0, 20),
             'title' => 'Plugin update available: ' . sanitize_text_field($all_plugins[$file]['Name'] ?? basename((string) $file)),
@@ -1136,6 +1143,7 @@ function awd_collect_diagnostics(array $settings): array
         'cronHistory' => $cron_history,
         'conflictTesting' => $conflict_testing,
         'integrity' => $integrity,
+        'hardening' => awd_hardening_report(),
         'issues' => array_slice($issues, 0, 50),
     );
     if ($authorized_log_excerpt !== '') $diagnostics['authorizedLogExcerpt'] = $authorized_log_excerpt;

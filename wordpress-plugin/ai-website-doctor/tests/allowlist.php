@@ -358,4 +358,36 @@ foreach (array(
     array('operation' => 'reinstall_plugin', 'parameters' => array('plugin' => 'a/b.php', 'expectedVersion' => '1', 'extra' => 'x')),
 ) as $bad) awd_test_assert(!awd_cleanup_step_is_valid($bad), 'unsafe maintenance step must be rejected');
 
+// Protection: crawler gate decisions, .htaccess block handling, trusted-block detection, alert de-duplication.
+$verify_yes = static function () { return true; };
+$verify_no = static function () { return false; };
+$googlebot = 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)';
+awd_test_assert(awd_crawler_decision('sqlmap/1.7', '/', 'GET', '1.2.3.4', $verify_yes) === 'attack tool', 'attack tools must be blocked everywhere');
+awd_test_assert(awd_crawler_decision($googlebot, '/', 'GET', '1.2.3.4', $verify_no) === null, 'public pages stay open to any crawler identity');
+awd_test_assert(awd_crawler_decision($googlebot, '/wp-login.php', 'GET', '1.2.3.4', $verify_no) === 'unverified crawler', 'fake Googlebot must be blocked on login');
+awd_test_assert(awd_crawler_decision($googlebot, '/wp-login.php', 'POST', '66.249.66.1', $verify_yes) === null, 'verified Googlebot must not be blocked');
+awd_test_assert(awd_crawler_decision('', '/xmlrpc.php', 'POST', '1.2.3.4', $verify_yes) === 'no user agent', 'empty user agents must be blocked on XML-RPC');
+awd_test_assert(awd_crawler_decision('', '/wp-admin/admin-ajax.php', 'POST', '1.2.3.4', $verify_yes) === null, 'admin-ajax must stay reachable');
+awd_test_assert(awd_crawler_decision('Mozilla/5.0 Chrome/130', '/wp-json/wp/v2/posts', 'GET', '1.2.3.4', $verify_no) === null, 'browsers are not gated');
+$base_htaccess = "# BEGIN WordPress\nRewriteEngine On\n# END WordPress\n";
+$root_block = awd_hardening_root_block(false, '/');
+$with_block = awd_hardening_set_block($base_htaccess, $root_block, true);
+awd_test_assert(str_starts_with($with_block, AWD_HARDENING_BEGIN) && str_contains($with_block, '# BEGIN WordPress'), 'hardening block must be prepended and keep the WordPress block');
+awd_test_assert(awd_hardening_set_block($with_block, $root_block, true) === $with_block, 'reapplying the block must be idempotent');
+awd_test_assert(trim(awd_hardening_set_block($with_block, null, true)) === trim($base_htaccess), 'removing the block must restore the original content');
+awd_test_assert(count(awd_integrity_htaccess_analysis($with_block)) > 0, 'an untrusted hardening block is analyzed like any other rule');
+update_option(AWD_HARDENING_OPTION, array('protect_sensitive_files' => array('enabled' => true, 'blockSha256' => hash('sha256', $root_block))));
+awd_test_assert(awd_integrity_htaccess_analysis($with_block) === array(), 'our exact block must not be reported as an injection');
+$tampered = str_replace('RewriteRule ^wp-admin/includes/ - [F,L]', "RewriteRule ^wp-admin/includes/ - [F,L]\nRewriteCond %{HTTP_USER_AGENT} google\nRewriteRule ^(.*)$ spam.php [L]", $with_block);
+awd_test_assert(count(awd_integrity_htaccess_analysis($tampered)) > 0, 'a modified hardening block must be analyzed again');
+update_option(AWD_HARDENING_OPTION, array());
+$alert_state = array();
+$first = awd_alerts_select(array(array('fingerprint' => 'integrity:core-modified', 'severity' => 'critical', 'title' => 'x'), array('fingerprint' => 'plugin-update:x', 'severity' => 'low', 'title' => 'y')), $alert_state, 100);
+$repeat = awd_alerts_select(array(array('fingerprint' => 'integrity:core-modified', 'severity' => 'critical', 'title' => 'x')), $alert_state, 200);
+awd_alerts_select(array(), $alert_state, 300);
+$returned = awd_alerts_select(array(array('fingerprint' => 'integrity:core-modified', 'severity' => 'critical', 'title' => 'x')), $alert_state, 400);
+awd_test_assert(count($first) === 1 && $repeat === array() && count($returned) === 1, 'alerts must fire once per finding and again when it returns');
+awd_test_assert(awd_cleanup_step_is_valid(array('operation' => 'set_hardening', 'parameters' => array('measure' => 'block_php_uploads', 'state' => 'on'))), 'set_hardening must validate');
+awd_test_assert(!awd_cleanup_step_is_valid(array('operation' => 'set_hardening', 'parameters' => array('measure' => 'run_code', 'state' => 'on'))), 'unknown hardening measures must be rejected');
+
 echo "WordPress plugin tests passed.\n";

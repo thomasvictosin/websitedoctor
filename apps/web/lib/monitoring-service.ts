@@ -45,6 +45,7 @@ export async function storeSecurityProbe(websiteId: string, scanSessionId: strin
     },
   });
   const issueIds: string[] = [];
+  const alreadyOpen = new Set((await db.issue.findMany({ where: { websiteId, source: "security_probe", status: { in: ["open", "acknowledged"] } }, select: { fingerprint: true } })).map((issue) => issue.fingerprint));
   for (const finding of probe.findings) {
     const evidence = { security: { checkedAt: probe.checkedAt, url: probe.url, check: finding.check, ...finding.evidence, limitations: probe.limitations }, collectedAt: probe.checkedAt };
     const issue = await db.issue.upsert({
@@ -71,6 +72,16 @@ export async function storeSecurityProbe(websiteId: string, scanSessionId: strin
   }).map((issue) => issue.id);
   if (resolvedIds.length) {
     await db.issue.updateMany({ where: { id: { in: resolvedIds }, websiteId }, data: { status: "resolved", resolvedAt: checkedAt, lastSeenAt: checkedAt } });
+  }
+  const newlyObserved = probe.findings.filter((finding) => !alreadyOpen.has(finding.fingerprint));
+  if (newlyObserved.length) {
+    try {
+      const { notifyNewSecurityFindings, runAutomaticProtection } = await import("./protection.ts");
+      await notifyNewSecurityFindings(websiteId, newlyObserved);
+      await runAutomaticProtection(websiteId);
+    } catch (error) {
+      console.error(`Security alerting failed for ${websiteId}:`, error instanceof Error ? error.message : error);
+    }
   }
   return { diagnosticId: diagnostic.id, issueIds, resolvedCount: resolvedIds.length };
 }

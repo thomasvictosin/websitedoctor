@@ -129,6 +129,13 @@ export const agentDiagnosticSchema = z.object({
     }
   }).optional(),
   integrity: integrityReportSchema.optional(),
+  hardening: z.array(z.object({
+    id: z.string().max(60),
+    enabled: z.boolean(),
+    verified: z.boolean().nullable(),
+    detail: z.string().max(300),
+    changedAt: z.string().nullable(),
+  })).max(20).optional(),
   settings: z.object({
     blogname: z.string().max(500),
     blogdescription: z.string().max(2000),

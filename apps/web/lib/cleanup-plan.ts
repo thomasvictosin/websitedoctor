@@ -24,6 +24,7 @@ export const CLEANUP_OPERATIONS = [
   "update_plugin",
   "reinstall_plugin",
   "install_plugin",
+  "set_hardening",
 ] as const;
 export type CleanupOperation = typeof CLEANUP_OPERATIONS[number];
 export const MIN_CLEANUP_PLUGIN_VERSION = "0.3.0";
@@ -57,6 +58,7 @@ export function isAllowedCleanupStep(step: { operation?: unknown; parameters?: u
     case "purge_quarantine": return keys === "runId" && /^[a-z0-9-]{8,64}$/.test(p.runId);
     case "update_plugin": return keys === "expectedVersion,plugin,targetVersion" && wordpressOrgPluginFile(p.plugin) && pluginVersion.test(p.expectedVersion) && pluginVersion.test(p.targetVersion);
     case "reinstall_plugin": return keys === "expectedVersion,plugin" && wordpressOrgPluginFile(p.plugin) && pluginVersion.test(p.expectedVersion);
+    case "set_hardening": return keys === "measure,state" && ["block_php_uploads", "protect_sensitive_files", "disable_file_editor", "disable_xmlrpc", "block_user_enumeration", "security_headers", "verified_crawlers"].includes(p.measure) && ["on", "off"].includes(p.state);
     case "install_plugin": return keys === "activate,slug,version" && /^[a-z0-9][a-z0-9-]{0,99}$/.test(p.slug) && p.slug !== "ai-website-doctor" && pluginVersion.test(p.version) && ["yes", "no"].includes(p.activate);
     default: return false;
   }

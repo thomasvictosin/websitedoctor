@@ -4,6 +4,7 @@ import { db } from "./db.ts";
 import { buildCleanupPlan, cleanupStepSchema, cleanupStepsDigest, fetchOfficialChecksums, fixPlanForIssue, pluginUpdateSteps, selectCleanupSteps, type CleanupPlan, type CleanupStep } from "./cleanup-plan.ts";
 import { checkWebsite } from "./monitor.ts";
 import { runAndStoreSecurityCheck } from "./monitoring-service.ts";
+import { notifySite } from "./protection.ts";
 
 /**
  * Cleanup runs are stored as repair proposals with proposal.kind
@@ -15,6 +16,7 @@ import { runAndStoreSecurityCheck } from "./monitoring-service.ts";
  */
 
 export const CLEANUP_KIND = "compromise_cleanup";
+export type CleanupActor = { kind: "admin" | "wordpress_admin" | "mcp" | "standing"; userId: string | null; interface?: "self_healing" | "auto_update" };
 const GRANT_TTL_MS = 2 * 60 * 60_000;
 const ACTIVE_STATUSES = ["approved", "executing"];
 
@@ -51,7 +53,7 @@ export async function startCleanup(input: {
   organizationId: string;
   planDigest: string;
   include: string[];
-  actor: { kind: "admin" | "wordpress_admin" | "mcp"; userId: string | null };
+  actor: CleanupActor;
   /** Pre-built steps for follow-up runs (purge); otherwise built from the current plan. */
   explicit?: { steps: CleanupStep[]; title: string; relatedRepairId?: string; issueId?: string; mode?: "compromise" | "maintenance" };
 }) {
@@ -77,7 +79,7 @@ export async function startCleanup(input: {
   if (!steps.every((step) => cleanupStepSchema.safeParse(step).success)) throw new CleanupError("A cleanup step failed validation.", 400);
   const digest = cleanupStepsDigest(steps);
   const operationIds = [...new Set(steps.map((step) => step.operation))];
-  const approvedBy = input.actor.kind === "wordpress_admin" ? "wordpress-admin" : input.actor.userId ?? "local-admin";
+  const approvedBy = input.actor.kind === "standing" ? `standing-policy:${input.actor.interface ?? "automatic"}` : input.actor.kind === "wordpress_admin" ? "wordpress-admin" : input.actor.userId ?? "local-admin";
 
   return db.$transaction(async (tx) => {
     await tx.$queryRaw`WITH advisory_lock AS MATERIALIZED (SELECT pg_advisory_xact_lock(hashtext(${input.websiteId}))) SELECT 1 FROM advisory_lock`;
@@ -93,7 +95,7 @@ export async function startCleanup(input: {
         issueId: anchorIssueId,
         status: "approved",
         risk: "high",
-        initiatingInterface: input.actor.kind === "wordpress_admin" ? "wordpress_plugin" : input.actor.kind === "mcp" ? "mcp" : "dashboard",
+        initiatingInterface: input.actor.interface ?? (input.actor.kind === "wordpress_admin" ? "wordpress_plugin" : input.actor.kind === "mcp" ? "mcp" : "dashboard"),
         operationIds,
         requiredPermissions: ["manage_options"],
         approvalStatus: "approved",
@@ -141,7 +143,7 @@ export async function startCleanup(input: {
     const website = await tx.website.findUnique({ where: { id: input.websiteId }, select: { organizationId: true } });
     await tx.auditLog.create({
       data: {
-        action: "cleanup_approved", actorType: input.actor.kind === "wordpress_admin" ? "wordpress_agent" : input.actor.kind, actorId: input.actor.userId ?? approvedBy,
+        action: input.actor.kind === "standing" ? "cleanup_started_by_policy" : "cleanup_approved", actorType: input.actor.kind === "wordpress_admin" ? "wordpress_agent" : input.actor.kind, actorId: input.actor.userId ?? approvedBy,
         actorUserId: input.actor.userId, organizationId: website?.organizationId ?? input.organizationId, resourceType: "repair", resourceId: repair.id,
         details: { stepCount: steps.length, operationIds } as Prisma.InputJsonValue,
       },
@@ -288,6 +290,9 @@ export async function recordCleanupReport(agent: { id: string; websiteId: string
   });
   await db.verificationResult.create({ data: { repairId: repair.id, executionId: agentExecution.id, status: verificationStatus, method: "integrity_rescan_and_outside_security_check", result: execution.verification as Prisma.InputJsonValue } });
   await db.repairEvent.create({ data: { repairId: repair.id, eventType: `cleanup_${verificationStatus}`, actor: "central", details: { applied: applied.length, failed: failed.length, notAttempted: notAttempted.length, reasons: reasons.slice(0, 10) } } });
+  await notifySite(agent.websiteId, "security", verificationStatus === "verified" ? "Cleanup verified" : `Cleanup ${verificationStatus}`, verificationStatus === "verified"
+    ? `${applied.length} change(s) applied. Visitors, Googlebot and search visitors now receive the same page and no critical or high integrity finding remains.`
+    : `${applied.length} change(s) applied, ${failed.length} failed. Still to resolve:\n${reasons.slice(0, 10).map((reason) => `- ${reason}`).join("\n")}`);
   return { status, verificationStatus, applied: applied.length, failed: failed.length, notAttempted: notAttempted.length, reasons };
 }
 
@@ -340,11 +345,12 @@ async function recordMaintenanceReport(
   });
   await db.verificationResult.create({ data: { repairId: repair.id, executionId: agentExecution.id, status: verificationStatus, method: "checksums_site_health_and_availability", result: execution.verification as Prisma.InputJsonValue } });
   await db.repairEvent.create({ data: { repairId: repair.id, eventType: `maintenance_${verificationStatus}`, actor: "central", details: { applied: applied.length, failed: failed.length, reasons: reasons.slice(0, 10) } } });
+  if (verificationStatus !== "verified") await notifySite(agent.websiteId, "maintenance", `Update ${verificationStatus}`, `${applied.length} change(s) applied, ${failed.length} failed:\n${reasons.slice(0, 10).map((reason) => `- ${reason}`).join("\n")}`);
   return { status, verificationStatus, applied: applied.length, failed: failed.length, notAttempted: notAttempted.length, reasons };
 }
 
 /** One-click fix for a finding (plugin update or reinstall). */
-export async function startIssueFix(input: { issueId: string; websiteId: string; organizationId: string; actor: { kind: "admin" | "wordpress_admin" | "mcp"; userId: string | null } }) {
+export async function startIssueFix(input: { issueId: string; websiteId: string; organizationId: string; actor: CleanupActor }) {
   const [issue, agent] = await Promise.all([
     db.issue.findFirst({ where: { id: input.issueId, websiteId: input.websiteId }, select: { id: true, fingerprint: true, status: true } }),
     db.wordPressAgent.findFirst({ where: { websiteId: input.websiteId, revokedAt: null }, select: { diagnostics: true, lastSeenAt: true } }),
@@ -359,7 +365,7 @@ export async function startIssueFix(input: { issueId: string; websiteId: string;
 }
 
 /** One-click update of WordPress.org plugins with available updates (all, or the listed files). */
-export async function startPluginUpdates(input: { websiteId: string; organizationId: string; plugins?: string[]; actor: { kind: "admin" | "wordpress_admin" | "mcp"; userId: string | null } }) {
+export async function startPluginUpdates(input: { websiteId: string; organizationId: string; plugins?: string[]; actor: CleanupActor }) {
   const agent = await db.wordPressAgent.findFirst({ where: { websiteId: input.websiteId, revokedAt: null }, select: { diagnostics: true, lastSeenAt: true } });
   await requireMaintenancePlugin(agent);
   const updates = pluginUpdateSteps(agent!.diagnostics, input.plugins);
@@ -381,3 +387,25 @@ export function maintenanceSummary(diagnostics: unknown) {
   const updates = pluginUpdateSteps(diagnostics);
   return { pluginUpdates: updates.steps.map((step) => ({ plugin: step.parameters.plugin, description: step.description })), notUpdatable: updates.skipped };
 }
+
+/** Turn protection measures on or off on the site through the approved executor. */
+export async function startProtectionChange(input: { websiteId: string; organizationId: string; changes: Array<{ measure: string; state: "on" | "off" }>; actor: CleanupActor }) {
+  const agent = await db.wordPressAgent.findFirst({ where: { websiteId: input.websiteId, revokedAt: null }, select: { diagnostics: true, lastSeenAt: true } });
+  if (!agent || agent.lastSeenAt.getTime() < Date.now() - 15 * 60_000) throw new CleanupError("The WordPress plugin must be connected and online to change protection.", 409);
+  const version = record(record(agent.diagnostics).site).pluginVersion;
+  const [major, minor] = typeof version === "string" ? version.split(".").map(Number) : [0, 0];
+  if (!(major > 0 || minor >= 5)) throw new CleanupError(`Protection needs AI Website Doctor 0.5.0 or later on the site (it reports ${typeof version === "string" ? version : "an older version"}).`, 409);
+  const steps = input.changes.map(({ measure, state }) => ({ description: `Turn ${state} protection: ${PROTECTION_MEASURE_TITLES[measure] ?? measure}.`, operation: "set_hardening" as const, parameters: { measure, state } }));
+  if (!steps.length || !steps.every((step) => cleanupStepSchema.safeParse(step).success)) throw new CleanupError("Unknown protection measure.", 400);
+  return startCleanup({ websiteId: input.websiteId, organizationId: input.organizationId, planDigest: "protection", include: [], actor: input.actor, explicit: { steps, title: steps.length === 1 ? steps[0].description.replace(/\.$/, "") : `Change ${steps.length} protection settings`, mode: "maintenance" } });
+}
+
+export const PROTECTION_MEASURE_TITLES: Record<string, string> = {
+  block_php_uploads: "Block PHP in uploads",
+  protect_sensitive_files: "Protect sensitive files",
+  disable_file_editor: "Turn off the code editor",
+  disable_xmlrpc: "Turn off XML-RPC",
+  block_user_enumeration: "Hide usernames",
+  security_headers: "Security headers",
+  verified_crawlers: "Block fake crawlers and attack tools",
+};

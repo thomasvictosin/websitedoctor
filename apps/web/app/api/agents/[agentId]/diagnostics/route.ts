@@ -1,10 +1,11 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { authenticateAgent } from "@/lib/agent-auth";
 import { agentDiagnosticSchema } from "@/lib/agent-diagnostics";
 import { db } from "@/lib/db";
 import { readBoundedJson } from "@/lib/request-json";
 import { deriveEvidenceSignals, selectRelevantTools } from "@/lib/ai/tool-registry";
 import { proposeStandingEligibleRepair } from "@/lib/repair-authorization";
+import { runAutomaticProtection } from "@/lib/protection";
 
 export const runtime = "nodejs";
 
@@ -156,6 +157,9 @@ export async function POST(
     where: { id: scanSession.id },
     data: { status: "completed", completedAt: new Date() },
   });
+  // Self-healing and automatic updates run after the response so the plugin's sync stays fast.
+  const websiteIdForProtection = auth.agent.websiteId;
+  after(() => runAutomaticProtection(websiteIdForProtection));
   return NextResponse.json({
     ok: true,
     issueCount: parsed.data.issues.length,

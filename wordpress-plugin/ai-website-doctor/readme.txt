@@ -3,7 +3,7 @@ Contributors: ai-website-doctor
 Tags: diagnostics, monitoring, wordpress
 Requires at least: 6.2
 Requires PHP: 8.0
-Stable tag: 0.4.0
+Stable tag: 0.5.0
 License: GPL-2.0-or-later
 
 Connects a WordPress site to a locally hosted AI Website Doctor app for authorized diagnostics and explicitly approved, allowlisted repairs.
@@ -52,6 +52,10 @@ Every step re-checks its target's content digest immediately before changing it 
 == One-click plugin fixes ==
 
 Each installed WordPress.org plugin is compared with the official per-file checksums for its version (cached for six hours); modified files and added PHP files are reported as a finding. "Plugin update available" findings show Fix: update plugin now, and modified plugins show Fix: reinstall plugin now; the central app's Cleanup tab can also update every WordPress.org plugin at once. The current plugin directory is moved into the quarantine, the exact approved version is installed from downloads.wordpress.org with WordPress's own installer, every file is verified against the official checksums, and the home page is loaded; if any check fails, the previous version is put back automatically. Premium plugins that are not on WordPress.org must be updated from their vendor. Updates need WordPress to write plugin files directly (no FTP credentials prompt).
+
+== Protection and alerts ==
+
+The Protection section turns on reversible hardening: block PHP execution in uploads, deny sensitive files (wp-config.php, logs, backups, dotfiles, readme/license, direct wp-includes PHP), turn off the code editor, turn off XML-RPC, hide usernames, send security headers, and block attack tools plus fake search crawlers (verified by reverse DNS) on login, XML-RPC, admin and API requests. .htaccess rules are written only between AI Website Doctor markers and tested on this server: if the server ignores .htaccess (for example nginx), the measure is shown as not effective with what to ask your host. Core and file integrity scans repeat hourly. New critical or high findings, and alerts from the central app (outside checks, self-healing and update results), are emailed to the site's administration email address through WordPress's own mail. Self-healing and automatic plugin updates are switched on per site in the central app. No setting makes a WordPress site impossible to compromise.
 
 == Limitations ==
 

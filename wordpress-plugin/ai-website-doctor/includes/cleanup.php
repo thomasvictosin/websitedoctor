@@ -34,7 +34,7 @@ add_action('admin_post_awd_fix_issue', 'awd_fix_issue_from_admin');
 
 function awd_cleanup_operations(): array
 {
-    return array('quarantine_file', 'restore_core_file', 'remove_htaccess_rules', 'quarantine_plugin', 'demote_user', 'rotate_salts', 'purge_page_cache', 'purge_quarantine', 'update_plugin', 'reinstall_plugin', 'install_plugin');
+    return array('quarantine_file', 'restore_core_file', 'remove_htaccess_rules', 'quarantine_plugin', 'demote_user', 'rotate_salts', 'purge_page_cache', 'purge_quarantine', 'update_plugin', 'reinstall_plugin', 'install_plugin', 'set_hardening');
 }
 
 function awd_cleanup_root(): string
@@ -136,6 +136,9 @@ function awd_cleanup_step_is_valid($step): bool
             return $keys === array('expectedVersion', 'plugin') && awd_plugin_slug($params['plugin']) !== null
                 && strpos($params['plugin'], 'ai-website-doctor/') !== 0 && (bool) preg_match('#^[a-z0-9-]+/[A-Za-z0-9._-]+\.php$#', $params['plugin'])
                 && (bool) preg_match('/^[0-9A-Za-z.+-]{1,40}$/', $params['expectedVersion']);
+        case 'set_hardening':
+            return $keys === array('measure', 'state') && in_array($params['state'], array('on', 'off'), true)
+                && function_exists('awd_hardening_measures') && array_key_exists($params['measure'], awd_hardening_measures());
         case 'install_plugin':
             return $keys === array('activate', 'slug', 'version') && (bool) preg_match('/^[a-z0-9][a-z0-9-]{0,99}$/', $params['slug']) && $params['slug'] !== 'ai-website-doctor'
                 && (bool) preg_match('/^[0-9A-Za-z.+-]{1,40}$/', $params['version']) && in_array($params['activate'], array('yes', 'no'), true);
@@ -493,6 +496,7 @@ function awd_cleanup_execute_steps(string $run_id, string $repair_id, array $ste
         'update_plugin' => 'awd_cleanup_op_update_plugin',
         'reinstall_plugin' => 'awd_cleanup_op_reinstall_plugin',
         'install_plugin' => 'awd_cleanup_op_install_plugin',
+        'set_hardening' => 'awd_cleanup_op_set_hardening',
     );
     $results = array();
     foreach (array_values($steps) as $index => $step) {
@@ -572,6 +576,11 @@ function awd_cleanup_restore_run(string $run_id, array $context = array()): arra
                 break;
             case 'install_plugin':
                 list($status, $message) = awd_plugin_restore_install($recovery, WP_PLUGIN_DIR, $dir);
+                break;
+            case 'set_hardening':
+                $undo = awd_hardening_apply((string) $recovery['measure'], !empty($recovery['wasEnabled']));
+                $status = $undo['ok'] ? 'restored' : 'failed';
+                $message = $undo['message'];
                 break;
             default:
                 continue 2;
@@ -737,4 +746,13 @@ function awd_fix_issue_from_admin(): void
     $detail = '';
     foreach ((array) ($outcome['results'] ?? array()) as $result) $detail .= ' ' . (string) $result['message'];
     awd_redirect(trim($outcome['message'] . $detail), $outcome['ok'] ? 'success' : 'warning');
+}
+
+function awd_cleanup_op_set_hardening(array $params, array $context): array
+{
+    $was = awd_hardening_enabled($params['measure']);
+    $enable = $params['state'] === 'on';
+    if ($was === $enable) return awd_cleanup_result('skipped', 'Already ' . $params['state'] . '.');
+    $result = awd_hardening_apply($params['measure'], $enable);
+    return awd_cleanup_result($result['ok'] ? 'applied' : 'failed', $result['message'], array('measure' => $params['measure'], 'wasEnabled' => $was));
 }

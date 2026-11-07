@@ -15,7 +15,8 @@ if (!defined('ABSPATH')) {
 }
 
 define('AWD_INTEGRITY_OPTION', 'ai_website_doctor_integrity_report');
-define('AWD_INTEGRITY_MAX_AGE', 6 * 3600);
+// Core and file scans repeat hourly; WordPress.org plugin checksums are cached longer (see plugin-maintenance.php).
+define('AWD_INTEGRITY_MAX_AGE', 3600);
 define('AWD_INTEGRITY_LIST_LIMIT', 50);
 define('AWD_INTEGRITY_TIME_BUDGET', 12.0);
 define('AWD_INTEGRITY_MAX_SCAN_BYTES', 1048576);
@@ -87,7 +88,18 @@ function awd_integrity_htaccess_analysis(string $content): array
 {
     $suspicious = array();
     $in_wordpress_block = false;
+    // Our own hardening block is skipped only when it is byte-identical to the block this plugin wrote.
+    $trusted_lines = array();
+    if (function_exists('awd_hardening_trusted_block_hashes') && preg_match_all('/# BEGIN AI Website Doctor hardening\n.*?\n# END AI Website Doctor hardening/s', str_replace(array("\r\n", "\r"), "\n", $content), $blocks, PREG_OFFSET_CAPTURE)) {
+        $normalized = str_replace(array("\r\n", "\r"), "\n", $content);
+        foreach ($blocks[0] as $block) {
+            if (!in_array(hash('sha256', $block[0]), awd_hardening_trusted_block_hashes(), true)) continue;
+            $first = substr_count(substr($normalized, 0, $block[1]), "\n");
+            for ($i = $first; $i <= $first + substr_count($block[0], "\n"); $i++) $trusted_lines[$i] = true;
+        }
+    }
     foreach (preg_split('/\r\n|\r|\n/', $content) as $number => $line) {
+        if (isset($trusted_lines[$number])) continue;
         $trimmed = trim($line);
         if (preg_match('/^#\s*BEGIN WordPress/i', $trimmed)) { $in_wordpress_block = true; continue; }
         if (preg_match('/^#\s*END WordPress/i', $trimmed)) { $in_wordpress_block = false; continue; }

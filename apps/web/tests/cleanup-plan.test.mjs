@@ -162,3 +162,15 @@ test("one-click fixes map findings to WordPress.org update and reinstall steps",
     { operation: "install_plugin", parameters: { slug: "wordfence", version: "1", activate: "maybe" } },
   ]) assert.equal(isAllowedCleanupStep(bad), false, JSON.stringify(bad));
 });
+
+test("protection steps validate and self-healing is limited to safe operations", async () => {
+  const { SELF_HEAL_OPERATIONS } = await import("../lib/protection.ts");
+  for (const measure of ["block_php_uploads", "protect_sensitive_files", "disable_file_editor", "disable_xmlrpc", "block_user_enumeration", "security_headers", "verified_crawlers"]) {
+    assert.ok(isAllowedCleanupStep({ operation: "set_hardening", parameters: { measure, state: "on" } }), measure);
+  }
+  assert.equal(isAllowedCleanupStep({ operation: "set_hardening", parameters: { measure: "run_code", state: "on" } }), false);
+  assert.equal(isAllowedCleanupStep({ operation: "set_hardening", parameters: { measure: "security_headers", state: "maybe" } }), false);
+  for (const risky of ["rotate_salts", "demote_user", "quarantine_plugin", "purge_quarantine", "install_plugin", "set_hardening"]) {
+    assert.ok(!SELF_HEAL_OPERATIONS.includes(risky), `${risky} must never run without a person`);
+  }
+});

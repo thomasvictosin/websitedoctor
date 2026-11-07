@@ -17,6 +17,7 @@ if (!defined('ABSPATH')) {
 
 define('AWD_PLUGIN_INTEGRITY_OPTION', 'ai_website_doctor_plugin_integrity');
 define('AWD_PLUGIN_INTEGRITY_BUDGET', 20.0);
+define('AWD_PLUGIN_INTEGRITY_MAX_AGE', 6 * 3600);
 
 function awd_plugin_slug(string $plugin_file): ?string
 {
@@ -88,7 +89,7 @@ function awd_plugin_integrity_report(array $plugins, bool $force = false): array
         $version = (string) ($plugin['version'] ?? '');
         if ($slug === null || $slug === 'ai-website-doctor') continue;
         $key = $slug . '@' . $version;
-        if (isset($cache[$key]) && is_array($cache[$key]) && strtotime((string) ($cache[$key]['checkedAt'] ?? '')) > time() - AWD_INTEGRITY_MAX_AGE) {
+        if (isset($cache[$key]) && is_array($cache[$key]) && strtotime((string) ($cache[$key]['checkedAt'] ?? '')) > time() - AWD_PLUGIN_INTEGRITY_MAX_AGE) {
             $results[] = $cache[$key];
             $fresh_cache[$key] = $cache[$key];
             continue;
