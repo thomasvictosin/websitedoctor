@@ -102,8 +102,10 @@ export async function runAndStoreCheck(
   try {
     const result = await checkSite(website.url);
     const checkedAt = new Date();
+    // SiteCheck has no finalUrl column; the final URL is kept in the evidence record below.
+    const { finalUrl: _finalUrl, ...checkColumns } = result;
     const check = await db.siteCheck.create({
-      data: { websiteId: website.id, scanSessionId: session.id, ...result, checkedAt },
+      data: { websiteId: website.id, scanSessionId: session.id, ...checkColumns, checkedAt },
     });
 
     let browser: Awaited<ReturnType<BrowserScanner>> | null = null;
