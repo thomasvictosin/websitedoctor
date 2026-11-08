@@ -58,13 +58,18 @@ export async function resolvePublicAddresses(hostname: string): Promise<Resolved
 }
 
 export function pinnedLookup(addresses: ResolvedAddress[]): NonNullable<RequestOptions["lookup"]> {
+  // Answer asynchronously, like dns.lookup: a synchronous answer lets a failed connect (for example an
+  // unreachable IPv6 address) emit its error before the request has attached its error handler,
+  // which crashes the whole process instead of failing one request.
   return ((_hostname, options, callback) => {
-    if (typeof options === "object" && options.all) {
-      callback(null, addresses);
-    } else {
-      const address = addresses[0];
-      callback(null, address.address, address.family);
-    }
+    setImmediate(() => {
+      if (typeof options === "object" && options.all) {
+        callback(null, addresses);
+      } else {
+        const address = addresses[0];
+        callback(null, address.address, address.family);
+      }
+    });
   }) as NonNullable<RequestOptions["lookup"]>;
 }
 

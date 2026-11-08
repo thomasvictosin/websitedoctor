@@ -228,10 +228,25 @@ function secureBrowserRequest(
   });
 }
 
+type CachedAsset = { status: number; headers: Record<string, string>; body: Buffer };
+const ASSET_CACHE = new WeakMap<object, { entries: Map<string, CachedAsset>; bytes: number }>();
+const MAX_ASSET_CACHE_BYTES = 200 * 1024 * 1024;
+const CACHEABLE_TYPES = new Set(["stylesheet", "script", "image", "font", "media"]);
+
 async function fulfillPublicRequest(route: Route, dependencies: BrowserDependencies, state: { count: number; bytes: number; errors: string[]; blockedUrls: Set<string> }) {
   if (!["GET", "HEAD"].includes(route.request().method())) {
     state.blockedUrls.add(route.request().url());
     await route.abort("blockedbyclient");
+    return;
+  }
+  // Theme and plugin files are the same on every page and at every width: fetch each once per scan,
+  // so the request and size budget goes to pages instead of the same CSS, scripts and fonts again.
+  const cacheable = route.request().method() === "GET" && CACHEABLE_TYPES.has(route.request().resourceType());
+  let cache = ASSET_CACHE.get(state);
+  if (!cache) { cache = { entries: new Map(), bytes: 0 }; ASSET_CACHE.set(state, cache); }
+  const cached = cacheable ? cache.entries.get(route.request().url()) : undefined;
+  if (cached) {
+    await route.fulfill({ status: cached.status, headers: cached.headers, body: cached.body }).catch(() => undefined);
     return;
   }
   try {
@@ -257,6 +272,10 @@ async function fulfillPublicRequest(route: Route, dependencies: BrowserDependenc
       }
       state.bytes += response.body.length;
       if (state.bytes > MAX_TOTAL_RESPONSE_BYTES) throw new Error("Browser scan reached its total response-size limit.");
+      if (cacheable && response.status === 200 && cache.bytes + response.body.length <= MAX_ASSET_CACHE_BYTES) {
+        cache.entries.set(route.request().url(), { status: response.status, headers: response.headers as Record<string, string>, body: response.body });
+        cache.bytes += response.body.length;
+      }
       await route.fulfill({ status: response.status, headers: response.headers, body: response.body });
       return;
     }
@@ -378,7 +397,9 @@ async function inspectAtViewport(page: Page, context: BrowserContext, url: strin
   const landed = /^https?:\/\//i.test(page.url());
   if (!landed && !navigationError) navigationError = `The page did not load (the browser ended on ${page.url().split("/")[0] || "a blank page"}).`;
   if (landed) await page.waitForTimeout(1000).catch(() => undefined);
-  const snapshot = (landed ? await page.evaluate(`(${CHECK_PAGE})()`).catch((error) => {
+  const stillOnSite = () => /^https?:\/\//i.test(page.url());
+  if (landed && !stillOnSite() && !navigationError) navigationError = "The page navigated to a browser error page while loading, so it was not audited.";
+  const snapshot = (landed && stillOnSite() ? await page.evaluate(`(${CHECK_PAGE})()`).catch((error) => {
     snapshotError = error instanceof Error ? error.message.slice(0, 500) : "Page inspection failed.";
     return null;
   }) : null) as Record<string, any> | null;
@@ -395,6 +416,11 @@ async function inspectAtViewport(page: Page, context: BrowserContext, url: strin
       return [];
     });
     snapshot.accessibility = axe;
+  }
+  if (snapshot && !stillOnSite()) {
+    // The page left the site during the audit; nothing measured here describes the site.
+    if (!navigationError) navigationError = "The page navigated to a browser error page during the audit, so its results were discarded.";
+    return { snapshot: null, runtimeErrors, consoleErrors, failedRequests, statusCode: response?.status() ?? null, navigationError, snapshotError, pageUrl: url, redirectChain };
   }
   if (snapshot && viewport.width <= 600) {
     const controls = page.locator("button[aria-controls]");
@@ -428,7 +454,7 @@ async function inspectAtViewport(page: Page, context: BrowserContext, url: strin
   page.off("console", onConsole);
   page.off("requestfailed", onRequestFailed);
   page.off("response", onResponse);
-  return { snapshot, runtimeErrors, consoleErrors, failedRequests, statusCode: response?.status() ?? null, navigationError, snapshotError, pageUrl: page.url(), redirectChain };
+  return { snapshot, runtimeErrors, consoleErrors, failedRequests, statusCode: response?.status() ?? null, navigationError, snapshotError, pageUrl: /^https?:\/\//i.test(page.url()) ? page.url() : url, redirectChain };
 }
 
 export async function scanBrowserSite(rawUrl: string, injected?: Partial<BrowserDependencies>): Promise<BrowserScanResult> {
@@ -480,6 +506,11 @@ export async function scanBrowserSite(rawUrl: string, injected?: Partial<Browser
       if (Date.now() >= deadline) {
         crawlIncomplete = true;
         errors.push("Browser scan reached its total time limit.");
+        break;
+      }
+      if (requestState.count >= MAX_REQUESTS || requestState.bytes >= MAX_TOTAL_RESPONSE_BYTES) {
+        crawlIncomplete = true;
+        errors.push(`Browser scan stopped after ${pages.length} page(s): it reached its ${requestState.count >= MAX_REQUESTS ? "request" : "download size"} limit.`);
         break;
       }
       const current = queue.shift()!;
