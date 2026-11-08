@@ -14,7 +14,7 @@ permissions: {}
 jobs:
   trigger:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 7
     steps:
       - name: Run due website checks
         env:
@@ -30,7 +30,7 @@ jobs:
             "${MONITOR_URL%/}/api/cron/monitor"
           # Once a day (the 05:30 UTC run), refresh known-vulnerability data.
           if [ "$(date -u +%H%M)" \< "0545" ] && [ "$(date -u +%H%M)" \> "0529" ]; then
-            curl --fail-with-body --silent --show-error --max-time 90 \
+            curl --fail-with-body --silent --show-error --max-time 290 \
               -H "Authorization: Bearer $CRON_SECRET" \
               "${MONITOR_URL%/}/api/cron/vulnerabilities"
           fi

@@ -30,7 +30,10 @@ export const CLEANUP_OPERATIONS = [
   "reinstall_theme",
   "quarantine_theme",
   "quarantine_theme_file",
+  "set_performance",
+  "install_package",
 ] as const;
+export const PERFORMANCE_MEASURE_IDS = ["page_cache", "compression", "browser_caching", "defer_scripts", "font_display_swap", "trim_extras", "lazy_load", "webp_uploads"];
 export type CleanupOperation = typeof CLEANUP_OPERATIONS[number];
 export const MIN_CLEANUP_PLUGIN_VERSION = "0.3.0";
 export const MAX_CLEANUP_STEPS = 120;
@@ -71,6 +74,12 @@ export function isAllowedCleanupStep(step: { operation?: unknown; parameters?: u
     case "restore_run": return keys === "runId" && /^[a-z0-9-]{8,64}$/.test(p.runId);
     case "set_hardening": return keys === "measure,state" && ["block_php_uploads", "protect_sensitive_files", "disable_file_editor", "disable_xmlrpc", "block_user_enumeration", "security_headers", "verified_crawlers"].includes(p.measure) && ["on", "off"].includes(p.state);
     case "install_plugin": return keys === "activate,slug,version" && /^[a-z0-9][a-z0-9-]{0,99}$/.test(p.slug) && p.slug !== "ai-website-doctor" && pluginVersion.test(p.version) && ["yes", "no"].includes(p.activate);
+    case "set_performance": return keys === "measure,state" && PERFORMANCE_MEASURE_IDS.includes(p.measure) && ["on", "off"].includes(p.state);
+    // An owner-uploaded zip that passed the app's scan; the plugin checks size and SHA-256 again and rescans before installing.
+    case "install_package": return keys === "chunks,expectedVersion,kind,packageId,sha256,size,target,version" && /^[a-z0-9]{20,40}$/.test(p.packageId)
+      && ((p.kind === "plugin" && wordpressOrgPluginFile(p.target)) || (p.kind === "theme" && themeSlug.test(p.target)))
+      && (p.expectedVersion === "none" || pluginVersion.test(p.expectedVersion)) && pluginVersion.test(p.version) && sha256.test(p.sha256)
+      && /^[1-9]\d{0,8}$/.test(p.size) && /^[1-9]\d{0,2}$/.test(p.chunks);
     default: return false;
   }
 }

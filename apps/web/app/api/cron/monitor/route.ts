@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { processScanQueueOnce } from "@/lib/scan-queue";
+import { refreshDueRenewals } from "@/lib/renewals";
 import { enqueueDueWebsites } from "@/lib/scheduler";
 
 export const runtime = "nodejs";
@@ -8,7 +9,7 @@ export const runtime = "nodejs";
 // (Vercel Cron, or any external scheduler) drives both scheduling and the
 // scan queue. Jobs left unfinished keep their lease and are retried later.
 export const maxDuration = 60;
-const WORK_BUDGET_MS = 45_000;
+const WORK_BUDGET_MS = 35_000;
 
 function authorized(request: Request) {
   const secret = process.env.CRON_SECRET;
@@ -26,5 +27,8 @@ export async function GET(request: Request) {
   const queued = await enqueueDueWebsites();
   let processed = 0;
   while (Date.now() - startedAt < WORK_BUDGET_MS && await processScanQueueOnce()) processed += 1;
-  return NextResponse.json({ queued, processed, elapsedMs: Date.now() - startedAt }, { headers: { "cache-control": "no-store" } });
+  // SSL, domain and hosting expiry: each site is checked once a day; reminders go out as dates approach.
+  let renewals: unknown = null;
+  try { renewals = await refreshDueRenewals(Math.max(5_000, 50_000 - (Date.now() - startedAt))); } catch (error) { renewals = { error: error instanceof Error ? error.message : "failed" }; }
+  return NextResponse.json({ queued, processed, renewals, elapsedMs: Date.now() - startedAt }, { headers: { "cache-control": "no-store" } });
 }

@@ -86,6 +86,9 @@ model Website {
   googleDriveSiteFolder GoogleDriveSiteFolder?
   repairAuthorization RepairAuthorization?
   repairPermissions   RepairPermission[]
+  renewals            SiteRenewal[]
+  performanceReports  PerformanceReport[]
+  softwarePackages    SoftwarePackage[]
 
   @@index([organizationId, createdAt])
   @@index([ownerId, createdAt])
@@ -633,4 +636,82 @@ model McpAccessToken {
   createdAt  DateTime  @default(now())
 
   @@index([userId, createdAt])
+}
+
+/// Expiry dates for a website's SSL certificate, domain and hosting, with reminder state.
+model SiteRenewal {
+  id              String    @id @default(cuid())
+  websiteId       String
+  website         Website   @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  kind            String
+  status          String    @default("unknown")
+  expiresAt       DateTime?
+  detectedExpiry  DateTime?
+  manualExpiresAt DateTime?
+  provider        String?
+  manualProvider  String?
+  notes           String?
+  details         Json?
+  error           String?
+  checkedAt       DateTime?
+  remindedStage   String?
+  remindedFor     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([websiteId, kind])
+  @@index([expiresAt])
+}
+
+/// One PageSpeed Insights run (mobile or desktop) with Core Web Vitals and diagnosed opportunities.
+model PerformanceReport {
+  id            String   @id @default(cuid())
+  websiteId     String
+  website       Website  @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  strategy      String
+  url           String
+  score         Int?
+  metrics       Json
+  field         Json?
+  opportunities Json
+  error         String?
+  createdAt     DateTime @default(now())
+
+  @@index([websiteId, strategy, createdAt])
+}
+
+/// A plugin or theme zip uploaded by the owner (premium or patched versions), scanned before it can be installed.
+model SoftwarePackage {
+  id             String                 @id @default(cuid())
+  organizationId String
+  websiteId      String
+  website        Website                @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  kind           String
+  slug           String
+  target         String
+  name           String?
+  version        String?
+  fileName       String
+  size           Int
+  sha256         String
+  chunkCount     Int
+  status         String                 @default("uploading")
+  scan           Json?
+  uploadedById   String?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+  chunks         SoftwarePackageChunk[]
+
+  @@index([websiteId, createdAt])
+  @@index([organizationId, createdAt])
+}
+
+model SoftwarePackageChunk {
+  packageId String
+  package   SoftwarePackage @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  index     Int
+  data      Bytes
+  sha256    String
+
+  @@id([packageId, index])
 }

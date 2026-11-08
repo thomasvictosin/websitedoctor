@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AI Website Doctor
  * Description: Connects this WordPress site to a locally hosted AI Website Doctor for diagnostics and explicitly approved repairs.
- * Version: 0.7.0
+ * Version: 0.8.0
  * Requires at least: 6.2
  * Requires PHP: 8.0
  * License: GPL-2.0-or-later
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('AWD_VERSION', '0.7.0');
+define('AWD_VERSION', '0.8.0');
 define('AWD_OPTION', 'ai_website_doctor_settings');
 define('AWD_RECOVERY_OPTION', 'ai_website_doctor_recovery_points');
 define('AWD_SYNC_OPTION', 'ai_website_doctor_sync_state');
@@ -28,6 +28,8 @@ require_once __DIR__ . '/includes/plugin-maintenance.php';
 require_once __DIR__ . '/includes/themes.php';
 require_once __DIR__ . '/includes/hardening.php';
 require_once __DIR__ . '/includes/alerts.php';
+require_once __DIR__ . '/includes/performance.php';
+require_once __DIR__ . '/includes/packages.php';
 
 // Observe task outcomes without invoking or disabling customer callbacks.
 add_action('init', 'awd_register_cron_observers', PHP_INT_MAX);
@@ -475,6 +477,8 @@ function awd_render_admin_page(): void
 
             <?php awd_render_cleanup_section($settings); ?>
             <?php awd_render_hardening_section(); ?>
+            <?php awd_render_performance_section(); ?>
+            <?php awd_render_package_section(); ?>
             <h2>Approved repair proposals</h2>
             <?php awd_render_pending_repairs($settings); ?>
             <h2>Central issues, AI analysis, and repair history</h2>
@@ -623,7 +627,7 @@ function awd_redirect(string $message, string $type = 'success'): void
     exit;
 }
 
-function awd_central_request(string $url, string $method, array $payload, string $token = '')
+function awd_central_request(string $url, string $method, array $payload, string $token = '', array $overrides = array())
 {
     $body = '';
     $args = array(
@@ -665,6 +669,11 @@ function awd_central_request(string $url, string $method, array $payload, string
             $body
         );
     }
+    if ($overrides) {
+        $args['headers'] = array_merge($args['headers'], (array) ($overrides['headers'] ?? array()));
+        unset($overrides['headers']);
+        $args = array_merge($args, $overrides);
+    }
     $response = wp_remote_request($url, $args);
     if (is_wp_error($response)) {
         return new WP_Error('awd_connection_failed', 'Could not reach the central app: ' . $response->get_error_message());
@@ -696,7 +705,7 @@ function awd_agent_request_signature(
     return hash_hmac('sha256', $canonical, $token);
 }
 
-function awd_authenticated_request(array $settings, string $path, string $method, array $payload = array())
+function awd_authenticated_request(array $settings, string $path, string $method, array $payload = array(), array $overrides = array())
 {
     if (empty($settings['central_url']) || empty($settings['agent_id']) || empty($settings['agent_token'])) {
         return new WP_Error('awd_not_connected', 'Connect this site to the central app first.');
@@ -706,7 +715,7 @@ function awd_authenticated_request(array $settings, string $path, string $method
         return new WP_Error('awd_invalid_url', 'Central app URL is invalid. Update the connection settings.');
     }
     $url = $base . '/api/agents/' . rawurlencode((string) $settings['agent_id']) . $path;
-    return awd_central_request($url, $method, $payload, (string) $settings['agent_token']);
+    return awd_central_request($url, $method, $payload, (string) $settings['agent_token'], $overrides);
 }
 
 function awd_sync_diagnostics(): void
@@ -1201,6 +1210,7 @@ function awd_collect_diagnostics(array $settings): array
         'conflictTesting' => $conflict_testing,
         'integrity' => $integrity,
         'hardening' => awd_hardening_report(),
+        'performance' => awd_performance_report(),
         'issues' => array_slice($issues, 0, 50),
     );
     if ($authorized_log_excerpt !== '') $diagnostics['authorizedLogExcerpt'] = $authorized_log_excerpt;

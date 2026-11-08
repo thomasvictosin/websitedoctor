@@ -435,4 +435,31 @@ foreach (array(
     array('operation' => 'quarantine_theme_file', 'parameters' => array('stylesheet' => 'bauen-child', 'path' => '../../wp-config.php', 'expectedSha256' => str_repeat('a', 64))),
 ) as $bad) awd_test_assert(!awd_cleanup_step_is_valid($bad), 'unsafe theme step must be rejected');
 
+// Speed measures and uploaded packages (0.8.0).
+awd_test_assert(awd_cleanup_step_is_valid(array('operation' => 'set_performance', 'parameters' => array('measure' => 'compression', 'state' => 'on'))), 'set_performance must validate');
+awd_test_assert(!awd_cleanup_step_is_valid(array('operation' => 'set_performance', 'parameters' => array('measure' => 'eval', 'state' => 'on'))), 'unknown performance measures must be rejected');
+$package = array('packageId' => 'cmw7abcdefghijklmnopqrstu', 'kind' => 'plugin', 'target' => 'revslider/revslider.php', 'expectedVersion' => '6.8.1', 'version' => '6.8.2', 'sha256' => str_repeat('b', 64), 'size' => '1234567', 'chunks' => '1');
+awd_test_assert(awd_cleanup_step_is_valid(array('operation' => 'install_package', 'parameters' => $package)), 'install_package must validate');
+foreach (array(
+    array('target' => 'ai-website-doctor/ai-website-doctor.php'),
+    array('target' => '../wp-config.php'),
+    array('kind' => 'theme', 'target' => '../x'),
+    array('sha256' => 'abc'),
+    array('chunks' => '0'),
+    array('packageId' => '../../etc'),
+) as $override) awd_test_assert(!awd_cleanup_step_is_valid(array('operation' => 'install_package', 'parameters' => array_merge($package, $override))), 'unsafe install_package step must be rejected');
+$GLOBALS['awd_fixture_options'][AWD_PERFORMANCE_OPTION] = array('compression' => array('enabled' => true), 'browser_caching' => array('enabled' => true));
+$perf_block = (string) awd_performance_htaccess_block();
+awd_test_assert(strpos($perf_block, AWD_PERFORMANCE_BEGIN) === 0 && strpos($perf_block, 'mod_deflate') !== false && strpos($perf_block, 'ExpiresActive On') !== false, 'performance block must contain compression and caching rules');
+awd_test_assert(awd_integrity_htaccess_analysis($perf_block) === array(), 'performance rules must not look like injected rules');
+$GLOBALS['awd_fixture_options'][AWD_PERFORMANCE_OPTION] = array();
+awd_test_assert(awd_performance_htaccess_block() === null, 'no performance block when nothing is on');
+$package_dir = sys_get_temp_dir() . '/awd-package-' . bin2hex(random_bytes(4));
+mkdir($package_dir . '/inc', 0700, true);
+file_put_contents($package_dir . '/plugin.php', "<?php\n/* Plugin Name: Clean */\necho 'ok';\n");
+awd_test_assert(awd_package_scan_dir($package_dir) === array(), 'a clean package must pass the scan');
+file_put_contents($package_dir . '/inc/x.php', '<?php eval(base64_decode($_POST["c"]));');
+awd_test_assert(array_keys(awd_package_scan_dir($package_dir)) === array('inc/x.php'), 'a package with malware must be stopped');
+array_map('unlink', array($package_dir . '/inc/x.php', $package_dir . '/plugin.php')); rmdir($package_dir . '/inc'); rmdir($package_dir);
+
 echo "WordPress plugin tests passed.\n";

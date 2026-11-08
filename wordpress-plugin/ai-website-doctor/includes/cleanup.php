@@ -36,7 +36,7 @@ add_action('rest_api_init', 'awd_register_wake_route');
 
 function awd_cleanup_operations(): array
 {
-    return array('quarantine_file', 'restore_core_file', 'remove_htaccess_rules', 'quarantine_plugin', 'demote_user', 'rotate_salts', 'purge_page_cache', 'purge_quarantine', 'update_plugin', 'reinstall_plugin', 'install_plugin', 'set_hardening', 'restore_run', 'update_theme', 'reinstall_theme', 'quarantine_theme', 'quarantine_theme_file');
+    return array('quarantine_file', 'restore_core_file', 'remove_htaccess_rules', 'quarantine_plugin', 'demote_user', 'rotate_salts', 'purge_page_cache', 'purge_quarantine', 'update_plugin', 'reinstall_plugin', 'install_plugin', 'set_hardening', 'restore_run', 'update_theme', 'reinstall_theme', 'quarantine_theme', 'quarantine_theme_file', 'set_performance', 'install_package');
 }
 
 function awd_cleanup_root(): string
@@ -153,6 +153,17 @@ function awd_cleanup_step_is_valid($step): bool
         case 'set_hardening':
             return $keys === array('measure', 'state') && in_array($params['state'], array('on', 'off'), true)
                 && function_exists('awd_hardening_measures') && array_key_exists($params['measure'], awd_hardening_measures());
+        case 'set_performance':
+            return $keys === array('measure', 'state') && in_array($params['state'], array('on', 'off'), true)
+                && function_exists('awd_performance_measures') && array_key_exists($params['measure'], awd_performance_measures());
+        case 'install_package':
+            $valid_target = $params['kind'] === 'plugin'
+                ? (bool) preg_match('#^[a-z0-9][a-z0-9-]{0,99}/[A-Za-z0-9._-]+\.php$#', $params['target']) && strpos($params['target'], 'ai-website-doctor/') !== 0
+                : ($params['kind'] === 'theme' && awd_theme_slug_is_valid($params['target']));
+            return $keys === array('chunks', 'expectedVersion', 'kind', 'packageId', 'sha256', 'size', 'target', 'version') && $valid_target
+                && (bool) preg_match('/^[a-z0-9]{20,40}$/', $params['packageId']) && $sha($params['sha256'])
+                && ($params['expectedVersion'] === 'none' || (bool) preg_match('/^[0-9A-Za-z.+-]{1,40}$/', $params['expectedVersion']))
+                && (bool) preg_match('/^[0-9A-Za-z.+-]{1,40}$/', $params['version']) && (bool) preg_match('/^[1-9][0-9]{0,8}$/', $params['size']) && (bool) preg_match('/^[1-9][0-9]{0,2}$/', $params['chunks']);
         case 'install_plugin':
             return $keys === array('activate', 'slug', 'version') && (bool) preg_match('/^[a-z0-9][a-z0-9-]{0,99}$/', $params['slug']) && $params['slug'] !== 'ai-website-doctor'
                 && (bool) preg_match('/^[0-9A-Za-z.+-]{1,40}$/', $params['version']) && in_array($params['activate'], array('yes', 'no'), true);
@@ -497,6 +508,7 @@ function awd_cleanup_execute_steps(string $run_id, string $repair_id, array $ste
         'wpVersion' => $context['wpVersion'] ?? (string) get_bloginfo('version'),
         'fetchCoreFile' => $context['fetchCoreFile'] ?? 'awd_cleanup_fetch_core_file',
         'runDir' => $run_dir,
+        'localZip' => $context['localZip'] ?? null,
     );
     $handlers = array(
         'quarantine_file' => 'awd_cleanup_op_quarantine_file',
@@ -516,6 +528,8 @@ function awd_cleanup_execute_steps(string $run_id, string $repair_id, array $ste
         'reinstall_theme' => 'awd_cleanup_op_reinstall_theme',
         'quarantine_theme' => 'awd_cleanup_op_quarantine_theme',
         'quarantine_theme_file' => 'awd_cleanup_op_quarantine_theme_file',
+        'set_performance' => 'awd_cleanup_op_set_performance',
+        'install_package' => 'awd_cleanup_op_install_package',
     );
     $results = array();
     foreach (array_values($steps) as $index => $step) {
@@ -601,6 +615,14 @@ function awd_cleanup_restore_run(string $run_id, array $context = array()): arra
             case 'quarantine_theme':
             case 'quarantine_theme_file':
                 list($status, $message) = awd_theme_restore($step, $recovery, $dir);
+                break;
+            case 'set_performance':
+                $undo = awd_performance_apply((string) $recovery['measure'], !empty($recovery['wasEnabled']));
+                $status = $undo['ok'] ? 'restored' : 'failed';
+                $message = $undo['message'];
+                break;
+            case 'install_package':
+                list($status, $message) = ($recovery['kind'] ?? '') === 'theme' ? awd_theme_restore($step, $recovery, $dir) : awd_plugin_restore_replace($recovery, WP_PLUGIN_DIR, $dir);
                 break;
             case 'set_hardening':
                 $undo = awd_hardening_apply((string) $recovery['measure'], !empty($recovery['wasEnabled']));

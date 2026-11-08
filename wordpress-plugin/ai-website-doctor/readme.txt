@@ -3,7 +3,7 @@ Contributors: ai-website-doctor
 Tags: diagnostics, monitoring, wordpress
 Requires at least: 6.2
 Requires PHP: 8.0
-Stable tag: 0.7.0
+Stable tag: 0.8.0
 License: GPL-2.0-or-later
 
 Connects a WordPress site to a locally hosted AI Website Doctor app for authorized diagnostics and explicitly approved, allowlisted repairs.
@@ -60,6 +60,14 @@ Every installed theme is listed with its version, parent and available update. T
 == Protection and alerts ==
 
 The Protection section turns on reversible hardening: block PHP execution in uploads, deny sensitive files (wp-config.php, logs, backups, dotfiles, readme/license, direct wp-includes PHP), turn off the code editor, turn off XML-RPC, hide usernames, send security headers, and block attack tools plus fake search crawlers (verified by reverse DNS) on login, XML-RPC, admin and API requests. .htaccess rules are written only between AI Website Doctor markers and tested on this server: if the server ignores .htaccess (for example nginx), the measure is shown as not effective with what to ask your host. Core and file integrity scans repeat hourly. New critical or high findings, and alerts from the central app (outside checks, self-healing and update results), are emailed to the site's administration email address through WordPress's own mail. Self-healing and automatic plugin updates are switched on per site in the central app. No setting makes a WordPress site impossible to compromise.
+
+== Speed ==
+
+The Speed section switches on fixes for the most common PageSpeed findings: page caching (through the active cache plugin; the central app installs LiteSpeed Cache or Cache Enabler from WordPress.org when there is none), text compression and browser caching (.htaccess rules between AI Website Doctor markers, tested with a real request), deferring non-critical JavaScript (WordPress keeps order-sensitive scripts blocking; jQuery is never deferred), font-display swap for Google Fonts, removing the emoji/embed scripts and visitor dashicons, lazy loading, and saving new uploads as WebP. Each measure is switched off again automatically if the home page breaks. The central app shows mobile and desktop PageSpeed scores and Core Web Vitals and recommends which measures to use.
+
+== Premium plugins and uploaded packages ==
+
+A premium plugin or theme (or a fixed version from its vendor) can be installed from a zip, either from the central app's Plugins & themes tab or from this plugin's page. The zip must contain one folder with the installed plugin's or theme's name, the same main file and a version number; every PHP file is scanned for malware patterns, and one strong match stops the install. The installed copy is moved into the quarantine first and is put back automatically if anything fails or the home page breaks; the run can also be restored later from the Quarantine section. Packages sent from the central app are downloaded with this site's signed credentials and must match the approved size and SHA-256.
 
 == Limitations ==
 

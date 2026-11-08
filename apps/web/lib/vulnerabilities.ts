@@ -1,17 +1,19 @@
 import type { Prisma } from "@prisma/client";
 import { compareVersions } from "./cleanup-plan.ts";
 import { db } from "./db.ts";
+import { anyWordfenceKey } from "./integrations.ts";
 
 /**
  * Known-vulnerability matching for installed plugins and WordPress core,
- * from the Wordfence Intelligence vulnerability feed (free API key:
- * WORDFENCE_INTELLIGENCE_API_KEY). A daily job downloads the scanner feed,
+ * from the Wordfence Intelligence vulnerability feed (v3; free API key pasted
+ * in Settings or WORDFENCE_INTELLIGENCE_API_KEY). A daily job downloads the scanner feed,
  * keeps only the entries for software installed on registered sites, and
  * stores that compact index. Each plugin sync is matched against the index,
  * so a site's findings change as soon as a plugin is updated.
  */
 
-const FEED_URL = "https://www.wordfence.com/api/intelligence/v2/vulnerabilities/scanner";
+const FEED_URL = "https://www.wordfence.com/api/intelligence/v3/vulnerabilities/scanner";
+const CLOSED_KEY = "wporg_closed_plugins";
 const INDEX_KEY = "vulnerability_index";
 type Json = Record<string, unknown>;
 const record = (value: unknown): Json => value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
@@ -111,8 +113,8 @@ export async function loadVulnerabilityIndex(): Promise<VulnerabilityIndex | nul
 
 /** Download the feed and rebuild the compact index for software installed on registered sites. */
 export async function refreshVulnerabilityIndex(fetcher: typeof fetch = fetch) {
-  const apiKey = process.env.WORDFENCE_INTELLIGENCE_API_KEY;
-  if (!apiKey) return { refreshed: false as const, reason: "WORDFENCE_INTELLIGENCE_API_KEY is not configured." };
+  const apiKey = await anyWordfenceKey();
+  if (!apiKey) return { refreshed: false as const, reason: "No Wordfence Intelligence key is set (Settings → Integrations)." };
   const agents = await db.wordPressAgent.findMany({ where: { revokedAt: null }, select: { diagnostics: true } });
   const wanted = new Set<string>(["core:wordpress"]);
   for (const agent of agents) {
@@ -124,35 +126,136 @@ export async function refreshVulnerabilityIndex(fetcher: typeof fetch = fetch) {
     }
   }
   const response = await fetcher(FEED_URL, { headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" }, signal: AbortSignal.timeout(45_000) });
-  if (!response.ok) return { refreshed: false as const, reason: `The Wordfence Intelligence feed returned HTTP ${response.status}${response.status === 401 ? " (check the API key)" : ""}.` };
+  if (!response.ok) {
+    const reason = `The Wordfence Intelligence feed returned HTTP ${response.status}${response.status === 401 || response.status === 403 ? " (check the API key)" : response.status === 429 ? " (rate limited; it is retried tomorrow)" : ""}.`;
+    await saveRefreshError(reason);
+    return { refreshed: false as const, reason };
+  }
   const parsed = parseFeed(await response.json(), wanted);
   if (parsed.total === 0) return { refreshed: false as const, reason: "The vulnerability feed format was not recognized; nothing was changed." };
   const index: VulnerabilityIndex = { fetchedAt: new Date().toISOString(), source: "wordfence", entries: parsed.total, bySlug: parsed.bySlug };
-  const existing = await db.systemSetting.findFirst({ where: { organizationId: null, scope: "global", scopeId: "system", key: INDEX_KEY }, select: { id: true } });
-  if (existing) await db.systemSetting.update({ where: { id: existing.id }, data: { value: index as unknown as Prisma.InputJsonValue } });
-  else await db.systemSetting.create({ data: { organizationId: null, scope: "global", scopeId: "system", key: INDEX_KEY, value: index as unknown as Prisma.InputJsonValue } });
+  await putGlobalSetting(INDEX_KEY, index);
   return { refreshed: true as const, feedEntries: parsed.total, matchedSoftware: Object.keys(parsed.bySlug).length };
+}
+
+type ClosedPlugin = { slug: string; name: string; closedDate: string | null; reason: string; reasonText: string; checkedAt: string };
+type ClosedIndex = { checked: Record<string, { closed: ClosedPlugin | null; checkedAt: string }> };
+
+async function globalSetting<T>(key: string): Promise<{ id: string | null; value: T | null }> {
+  const row = await db.systemSetting.findFirst({ where: { organizationId: null, scope: "global", scopeId: "system", key }, select: { id: true, value: true } });
+  return { id: row?.id ?? null, value: (row?.value as T | undefined) ?? null };
+}
+
+async function putGlobalSetting(key: string, value: unknown) {
+  const { id } = await globalSetting(key);
+  if (id) await db.systemSetting.update({ where: { id }, data: { value: value as Prisma.InputJsonValue } });
+  else await db.systemSetting.create({ data: { organizationId: null, scope: "global", scopeId: "system", key, value: value as Prisma.InputJsonValue } });
+}
+
+async function saveRefreshError(reason: string) {
+  await putGlobalSetting("vulnerability_refresh_error", { reason, at: new Date().toISOString() });
+}
+
+/**
+ * WordPress.org closes plugins for security issues and guideline violations;
+ * a closed plugin gets no more updates. This needs no API key. Each slug is
+ * looked up at most once a week (premium plugins answer "not found").
+ */
+export async function refreshClosedPlugins(slugs: string[], fetcher: typeof fetch = fetch, budgetMs = 20_000) {
+  const { value } = await globalSetting<ClosedIndex>(CLOSED_KEY);
+  const index: ClosedIndex = { checked: { ...(value?.checked ?? {}) } };
+  const weekAgo = Date.now() - 7 * 24 * 60 * 60_000;
+  const due = [...new Set(slugs)].filter((slug) => /^[a-z0-9][a-z0-9-]{0,99}$/.test(slug) && slug !== "ai-website-doctor" && !(Date.parse(index.checked[slug]?.checkedAt ?? "") > weekAgo));
+  const deadline = Date.now() + budgetMs;
+  let looked = 0;
+  for (let offset = 0; offset < due.length && Date.now() < deadline; offset += 8) {
+    await Promise.all(due.slice(offset, offset + 8).map(async (slug) => {
+      try {
+        const response = await fetcher(`https://api.wordpress.org/plugins/info/1.2/?action=plugin_information&request%5Bslug%5D=${encodeURIComponent(slug)}&request%5Bfields%5D%5Bsections%5D=0`, { signal: AbortSignal.timeout(8_000) });
+        const body = record(await response.json());
+        const checkedAt = new Date().toISOString();
+        index.checked[slug] = body.closed === true
+          ? { checkedAt, closed: { slug, name: String(body.name ?? slug).replace(/^Author:\s*/, "").slice(0, 200), closedDate: typeof body.closed_date === "string" ? body.closed_date : null, reason: String(body.reason ?? "unknown"), reasonText: String(body.reason_text ?? body.reason ?? "Unknown").slice(0, 100), checkedAt } }
+          : { checkedAt, closed: null };
+        looked += 1;
+      } catch {
+        // Unreachable this time; checked again on the next run.
+      }
+    }));
+  }
+  await putGlobalSetting(CLOSED_KEY, index);
+  return { looked, closed: Object.values(index.checked).filter((entry) => entry.closed).length };
+}
+
+export function matchClosedPlugins(index: ClosedIndex | null, diagnostics: unknown): VulnerabilityFinding[] {
+  if (!index) return [];
+  const plugins = Array.isArray(record(diagnostics).plugins) ? (record(diagnostics).plugins as unknown[]).map(record) : [];
+  const findings: VulnerabilityFinding[] = [];
+  for (const plugin of plugins) {
+    if (typeof plugin.file !== "string" || !plugin.file.includes("/")) continue;
+    const slug = plugin.file.split("/")[0];
+    const closed = index.checked[slug]?.closed;
+    if (!closed) continue;
+    const security = /security/i.test(closed.reason);
+    findings.push({
+      fingerprint: `vuln:plugin-${slug}:wporg-closed`,
+      title: `${String(plugin.name ?? slug)} was closed on WordPress.org${security ? " for a security issue" : ""}`.slice(0, 200),
+      description: `WordPress.org closed this plugin${closed.closedDate ? ` on ${closed.closedDate}` : ""} (reason: ${closed.reasonText}). It no longer receives updates${security ? ", and the reason given is an unfixed security issue" : ""}. Replace it with a maintained alternative, or remove it if it is not needed.`,
+      severity: security ? "high" : "medium",
+      evidence: { vulnerability: { id: "wporg-closed", title: `Closed on WordPress.org: ${closed.reasonText}`, type: "plugin", slug, ranges: [], patchedVersions: [], cvss: null, rating: null, cve: null, reference: `https://wordpress.org/plugins/${slug}/` }, installed: { name: String(plugin.name ?? slug), version: String(plugin.version ?? ""), file: plugin.file, availableUpdate: null, source: typeof plugin.source === "string" ? plugin.source : null }, fixedIn: null, updateFixes: false, closed },
+    });
+  }
+  return findings;
+}
+
+/** What the Settings and Issues pages show about the vulnerability database. */
+export async function vulnerabilityStatus() {
+  const [index, error, closed, key] = await Promise.all([loadVulnerabilityIndex(), globalSetting<{ reason: string; at: string }>("vulnerability_refresh_error"), globalSetting<ClosedIndex>(CLOSED_KEY), anyWordfenceKey()]);
+  const lastError = error.value && (!index || Date.parse(error.value.at) > Date.parse(index.fetchedAt)) ? error.value : null;
+  return {
+    keyConfigured: Boolean(key),
+    feedFetchedAt: index?.fetchedAt ?? null,
+    feedEntries: index?.entries ?? 0,
+    matchedSoftware: index ? Object.keys(index.bySlug).length : 0,
+    lastError,
+    closedPluginsCheckedAt: closed.value ? Object.values(closed.value.checked).map((entry) => entry.checkedAt).sort().at(-1) ?? null : null,
+  };
 }
 
 /** Upsert a site's vulnerability findings and resolve the ones no longer matching. */
 export async function storeVulnerabilityFindings(websiteId: string, diagnostics: unknown, index?: VulnerabilityIndex | null) {
   const current = index === undefined ? await loadVulnerabilityIndex() : index;
-  if (!current) return { checked: false };
-  const findings = matchVulnerabilities(current, diagnostics);
+  const closed = (await globalSetting<ClosedIndex>(CLOSED_KEY)).value;
+  if (!current && !closed) return { checked: false };
+  const findings = [...(current ? matchVulnerabilities(current, diagnostics) : []), ...matchClosedPlugins(closed, diagnostics)];
   const now = new Date();
   for (const finding of findings) {
+    const evidence = { ...finding.evidence, feedFetchedAt: current?.fetchedAt ?? null } as Prisma.InputJsonValue;
     await db.issue.upsert({
       where: { websiteId_fingerprint: { websiteId, fingerprint: finding.fingerprint } },
-      create: { websiteId, fingerprint: finding.fingerprint, title: finding.title, description: finding.description, severity: finding.severity, source: "vulnerability_feed", evidence: { ...finding.evidence, feedFetchedAt: current.fetchedAt } as Prisma.InputJsonValue },
-      update: { title: finding.title, description: finding.description, severity: finding.severity, status: "open", resolvedAt: null, lastSeenAt: now, evidence: { ...finding.evidence, feedFetchedAt: current.fetchedAt } as Prisma.InputJsonValue },
+      create: { websiteId, fingerprint: finding.fingerprint, title: finding.title, description: finding.description, severity: finding.severity, source: "vulnerability_feed", evidence },
+      update: { title: finding.title, description: finding.description, severity: finding.severity, status: "open", resolvedAt: null, lastSeenAt: now, evidence },
     });
   }
   const active = findings.map((finding) => finding.fingerprint);
+  // Without the Wordfence index, only closed-plugin findings can be judged; keep feed findings as they are.
   await db.issue.updateMany({
-    where: { websiteId, source: "vulnerability_feed", status: { in: ["open", "acknowledged"] }, ...(active.length ? { fingerprint: { notIn: active } } : {}) },
+    where: { websiteId, source: "vulnerability_feed", status: { in: ["open", "acknowledged"] }, fingerprint: { ...(current ? {} : { endsWith: ":wporg-closed" }), ...(active.length ? { notIn: active } : {}) } },
     data: { status: "resolved", resolvedAt: now, lastSeenAt: now },
   });
   return { checked: true, findings: findings.length };
+}
+
+/** Every installed plugin slug across connected sites. */
+export async function installedPluginSlugs() {
+  const agents = await db.wordPressAgent.findMany({ where: { revokedAt: null }, select: { diagnostics: true } });
+  const slugs = new Set<string>();
+  for (const agent of agents) {
+    for (const plugin of Array.isArray(record(agent.diagnostics).plugins) ? (record(agent.diagnostics).plugins as unknown[]).map(record) : []) {
+      if (typeof plugin.file === "string" && plugin.file.includes("/")) slugs.add(plugin.file.split("/")[0]);
+    }
+  }
+  return [...slugs];
 }
 
 /** Plugin file for a "vuln:plugin-<slug>:<id>" fingerprint. */
@@ -160,3 +263,19 @@ export function pluginSlugForVulnerability(fingerprint: string) {
   const match = /^vuln:plugin-([a-z0-9-]+):/.exec(fingerprint);
   return match ? match[1] : null;
 }
+
+/** Refresh the vulnerability index and WordPress.org closed-plugin list, then re-match every connected site. */
+export async function refreshAllVulnerabilities() {
+  const refresh = await refreshVulnerabilityIndex();
+  const closed = await refreshClosedPlugins(await installedPluginSlugs());
+  const index = await loadVulnerabilityIndex();
+  let sites = 0;
+  let findings = 0;
+  for (const agent of await db.wordPressAgent.findMany({ where: { revokedAt: null }, select: { websiteId: true, diagnostics: true } })) {
+    const result = await storeVulnerabilityFindings(agent.websiteId, agent.diagnostics, index);
+    sites += 1;
+    findings += "findings" in result ? result.findings ?? 0 : 0;
+  }
+  return { refresh, closed, indexFetchedAt: index?.fetchedAt ?? null, sites, findings };
+}
+

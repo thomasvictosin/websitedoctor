@@ -60,7 +60,7 @@ export async function notifySite(websiteId: string, kind: "security" | "self_hea
 
 export async function recentSiteAlerts(websiteId: string, since: Date) {
   return db.notification.findMany({
-    where: { category: { in: [`security:${websiteId}`, `self_healing:${websiteId}`, `maintenance:${websiteId}`] }, createdAt: { gte: since } },
+    where: { category: { in: [`security:${websiteId}`, `self_healing:${websiteId}`, `maintenance:${websiteId}`, `renewal:${websiteId}`] }, createdAt: { gte: since } },
     orderBy: { createdAt: "desc" }, take: 20,
     select: { id: true, category: true, title: true, body: true, createdAt: true },
   });

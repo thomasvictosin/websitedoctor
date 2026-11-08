@@ -9,6 +9,10 @@ import { IssueBoard, isOpenIssue } from "./issue-board";
 import { CloudflarePanel, ProtectionManager } from "./protection-manager";
 import { RepairCentre, type LegacyRepairRow } from "./repair-centre";
 import { McpAccessManager } from "./mcp-access-manager";
+import { IntegrationsSettings } from "./integrations-settings";
+import { PerformancePanel } from "./performance-panel";
+import { RenewalsPanel, UpcomingRenewals } from "./renewals-panel";
+import { PackageUploadDialog, SoftwarePanel, type UploadTarget } from "./software-panel";
 import { parseAssistantRepairPermissionCommand } from "@/lib/repair-assistant-intent";
 
 type Check = {
@@ -175,7 +179,7 @@ type Settings = {
   authentication: string;
 };
 
-type DashboardView = "dashboard" | "websites" | "issues" | "repairs" | "assistant" | "team";
+type DashboardView = "dashboard" | "websites" | "issues" | "repairs" | "assistant" | "team" | "settings";
 type RepairAuthorizationPolicy = { mode: "manual" | "auto_eligible"; allowedOperations: string[]; maxRisk: "low" | "medium" | "high"; maxRepairsPerBatch: number; requireRecoveryPoint: true; requireVerification: true; paused: boolean };
 const repairOperationDescriptions = [
   ["replace_post_link", "Replace one exact broken or redirecting URL in one mapped published post."],
@@ -247,8 +251,9 @@ export default function Home() {
   const [history, setHistory] = useState<Record<string, Check[]>>({});
   const [pairingCodes, setPairingCodes] = useState<Record<string, { code: string; expiresAt: string }>>({});
   const [activeView, setActiveView] = useState<DashboardView>("dashboard");
+  const [uploadTarget, setUploadTarget] = useState<UploadTarget | null>(null);
   const [selectedWebsiteId, setSelectedWebsiteId] = useState<string | null>(null);
-  const [websiteDetailTab, setWebsiteDetailTab] = useState<"overview" | "diagnostics" | "performance" | "accessibility" | "responsive" | "repair-history" | "cleanup" | "protection" | "backups" | "history" | "settings">("overview");
+  const [websiteDetailTab, setWebsiteDetailTab] = useState<"overview" | "software" | "performance" | "renewals" | "diagnostics" | "accessibility" | "responsive" | "repair-history" | "cleanup" | "protection" | "backups" | "history" | "settings">("overview");
   const [assistantWebsiteId, setAssistantWebsiteId] = useState("");
   const [assistantQuestion, setAssistantQuestion] = useState("");
   const [assistantBusy, setAssistantBusy] = useState(false);
@@ -724,6 +729,9 @@ export default function Home() {
                       {busy === `fix:${issue.id}` ? "Approving…" : issue.repairs.some((repair) => (repair.proposal as { kind?: string }).kind === "compromise_cleanup" && ["approved", "executing"].includes(repair.status)) ? "Fix in progress…" : activeRunForSite(issue.website.id) && oneClickFix(issue)!.confirm ? "Site busy…" : oneClickFix(issue)!.label}
                     </button>
                   )}
+                  {issue.status !== "resolved" && /^vuln:plugin-/.test(issue.fingerprint) && oneClickFix(issue)?.label !== "Remove until fixed" && (
+                    <button className="button ghost issue-secondary" disabled={busy !== null || Boolean(activeRunForSite(issue.website.id))} onClick={() => removeUntilFixed(issue)}>Remove until fixed</button>
+                  )}
                   {(() => {
                     const progress = fixProgress(issue);
                     return progress ? <span className="fix-progress" role="status">{progress.active && <span className="spinner" aria-hidden="true" />}{progress.text}</span> : null;
@@ -857,15 +865,70 @@ export default function Home() {
     if (issue.fingerprint.startsWith("wp:integrity:plugin-modified:")) return { label: "Fix: reinstall plugin", confirm: "Reinstall this plugin from WordPress.org? Its current, modified files are kept in the quarantine and can be restored." };
     if (issue.fingerprint.startsWith("wp:theme-update:")) return { label: "Fix: update theme", confirm: "Update this theme on the live site now? It is downloaded from WordPress.org, compared with the official package, and the previous version is put back automatically if the site breaks." };
     if (issue.fingerprint.startsWith("wp:integrity:theme-modified:")) return { label: "Fix: reinstall theme", confirm: "Reinstall this theme from WordPress.org? Its current, modified files are kept in the quarantine and can be restored." };
-    if (issue.fingerprint.startsWith("vuln:theme-")) return { label: "Fix vulnerability", confirm: "Fix this vulnerable theme on the live site? If a fixed version is available it is installed from WordPress.org and verified; an unused theme with no fix yet is moved to the quarantine. An active theme without a fix is never removed automatically." };
-    if (issue.fingerprint.startsWith("vuln:plugin-")) return { label: "Fix vulnerability", confirm: "Fix this vulnerable plugin on the live site? If a fixed version is available it is installed from WordPress.org and verified (the old version is put back if the site breaks); if no fix exists yet, the plugin is deactivated and moved to the quarantine, where it can be restored." };
+    if (issue.fingerprint.startsWith("vuln:")) {
+      const evidence = (issue.evidence ?? {}) as { fixedIn?: string | null; updateFixes?: boolean };
+      if (evidence.updateFixes) return { label: "Fix: install fixed version", confirm: "Install the fixed version on the live site? It is downloaded from WordPress.org and verified, and the old version is put back automatically if the site breaks." };
+      if (evidence.fixedIn && uploadTargetFor(issue)) return { label: "Upload fixed version", confirm: null, action: "upload" as const };
+      if (issue.fingerprint.startsWith("vuln:theme-")) return { label: "Fix vulnerability", confirm: "Fix this vulnerable theme? An unused theme with no fix yet is moved to the quarantine (restorable). An active theme without a fix is never removed automatically." };
+      return { label: "Remove until fixed", confirm: "No fixed version exists yet. Deactivate this plugin and move it to the quarantine? It can be restored from the quarantine at any time." };
+    }
+    if (/^wp:(?:plugin|theme)-update:/.test(issue.fingerprint) && uploadTargetFor(issue)) return { label: "Upload new version", confirm: null, action: "upload" as const };
+    if (issue.fingerprint.startsWith("perf:")) return { label: "See speed fixes", confirm: null, action: "performance" as const };
+    if (issue.fingerprint.startsWith("renewal:")) return { label: "Open renewals", confirm: null, action: "renewals" as const };
     if (/^(?:wp:)?(?:security|integrity):/.test(issue.fingerprint)) return { label: "Fix: open cleanup", confirm: null };
     return null;
+  }
+
+  /**
+   * Premium plugins and themes (not on WordPress.org) are fixed by uploading
+   * the vendor's zip; works for vulnerability and update findings.
+   */
+  function uploadTargetFor(issue: Issue): UploadTarget | null {
+    const site = websites.find((item) => item.id === issue.website.id);
+    const diagnostics = (site?.wordpressAgent?.diagnostics ?? {}) as { plugins?: Array<Record<string, unknown>>; themes?: Array<Record<string, unknown>> };
+    const evidence = (issue.evidence ?? {}) as { fixedIn?: string | null };
+    const vuln = /^vuln:(plugin|theme)-([a-z0-9_-]+):/.exec(issue.fingerprint);
+    if (vuln) {
+      if (vuln[1] === "plugin") {
+        const plugin = (diagnostics.plugins ?? []).find((item) => typeof item.file === "string" && String(item.file).split("/")[0] === vuln[2]);
+        return plugin && plugin.source !== "wordpress.org" ? { websiteId: issue.website.id, kind: "plugin", target: String(plugin.file), name: String(plugin.name ?? plugin.file), installedVersion: String(plugin.version ?? ""), fixedIn: evidence.fixedIn ?? null, issueId: issue.id } : null;
+      }
+      const theme = (diagnostics.themes ?? []).find((item) => item.stylesheet === vuln[2]);
+      return theme && theme.source !== "wordpress.org" ? { websiteId: issue.website.id, kind: "theme", target: String(theme.stylesheet), name: String(theme.name ?? theme.stylesheet), installedVersion: String(theme.version ?? ""), fixedIn: evidence.fixedIn ?? null, issueId: issue.id } : null;
+    }
+    const update = /^(Plugin|Theme) update available:\s*(.+)$/.exec(issue.title);
+    if (!update) return null;
+    if (update[1] === "Plugin") {
+      const plugin = (diagnostics.plugins ?? []).find((item) => item.name === update[2]);
+      return plugin && plugin.source !== "wordpress.org" && typeof plugin.file === "string" ? { websiteId: issue.website.id, kind: "plugin", target: plugin.file, name: String(plugin.name), installedVersion: String(plugin.version ?? ""), fixedIn: null, issueId: issue.id } : null;
+    }
+    const theme = (diagnostics.themes ?? []).find((item) => item.name === update[2]);
+    return theme && theme.source !== "wordpress.org" ? { websiteId: issue.website.id, kind: "theme", target: String(theme.stylesheet), name: String(theme.name), installedVersion: String(theme.version ?? ""), fixedIn: null, issueId: issue.id } : null;
+  }
+
+  /** Deactivate a vulnerable plugin (or remove an unused theme) until a fixed version is installed. */
+  async function removeUntilFixed(issue: Issue) {
+    if (!await dialogs.confirm({ title: "Remove until fixed?", body: "The plugin is deactivated and moved to the quarantine (an unused theme is moved there too). Anything it provides on the site stops working until you install a fixed version or restore it from the quarantine.", confirmLabel: "Remove until fixed", danger: true })) return;
+    setBusy(`fix:${issue.id}`);
+    try {
+      const response = await fetch(`/api/issues/${issue.id}/fix`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ confirm: true, mode: "remove" }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "The removal could not be approved.");
+      setMessage(`${result.steps?.join(" ") ?? "Approved."} It is restorable from the quarantine.`);
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The removal could not be approved.");
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function fixIssue(issue: Issue) {
     const fix = oneClickFix(issue);
     if (!fix) return;
+    if ("action" in fix && fix.action === "upload") { const target = uploadTargetFor(issue); if (target) setUploadTarget(target); return; }
+    if ("action" in fix && fix.action === "performance") { openWebsiteDetail(issue.website.id, "performance"); return; }
+    if ("action" in fix && fix.action === "renewals") { openWebsiteDetail(issue.website.id, "renewals"); return; }
     if (!fix.confirm) {
       openWebsiteDetail(issue.website.id, "cleanup");
       setMessage("Compromise findings are fixed together: review the cleanup plan below and approve it once.");
@@ -1275,6 +1338,7 @@ export default function Home() {
           ["repairs", "Repairs"],
           ["assistant", "AI assistant"],
           ["team", "Team"],
+          ["settings", "Settings"],
         ] as Array<[DashboardView, string]>).map(([view, label]) => (
           <button
             key={view}
@@ -1295,13 +1359,16 @@ export default function Home() {
           repairs: "Repairs & automation",
           assistant: "Ask about your website health",
           team: "Organization members",
+          settings: "Settings",
           dashboard: "Overview",
         }[activeView]}</h1>
         <p className="subtitle">{activeView === "assistant"
           ? "Answers use stored scan and issue evidence. If the evidence is missing, the assistant will say so."
           : activeView === "repairs"
             ? "Everything the app can fix, what is running now, what waits for you, what runs automatically, and what happened."
-            : "Monitor availability, review evidence, and get local AI guidance — all from your own machine."}</p>
+            : activeView === "settings"
+              ? "Connect the free services behind vulnerability checks, PageSpeed scores and email reminders."
+              : "Monitor availability, review evidence, and get local AI guidance — all from your own machine."}</p>
       </section>
 
       {activeView === "dashboard" && websites.filter((site) => compromiseFindings(site.id).length > 0).map((site) => (
@@ -1452,9 +1519,12 @@ export default function Home() {
             <button className="button ghost" onClick={() => setSelectedWebsiteId(null)}>Close details</button>
           </div>
           <div className="detail-tabs" role="tablist" aria-label="Website detail sections">
-            {(["overview", "diagnostics", "performance", "accessibility", "responsive", "repair-history", "cleanup", "protection", "backups", "history", "settings"] as const).map((tab) => (
+            {([
+              ["overview", "Overview"], ["software", "Plugins & themes"], ["performance", "Performance"], ["renewals", "Renewals"], ["cleanup", "Clean up & fixes"], ["protection", "Protection"],
+              ["backups", "Backups"], ["diagnostics", "Diagnostics"], ["accessibility", "Accessibility"], ["responsive", "Responsive"], ["repair-history", "Repair history"], ["history", "Scan history"], ["settings", "Settings"],
+            ] as const).map(([tab, label]) => (
               <button key={tab} role="tab" aria-selected={websiteDetailTab === tab} className={websiteDetailTab === tab ? "active" : ""}
-                onClick={() => setWebsiteDetailTab(tab)}>{tab === "cleanup" ? "Clean up & fixes" : tab === "protection" ? "Protection" : tab}</button>
+                onClick={() => setWebsiteDetailTab(tab)}>{label}</button>
             ))}
           </div>
           <WebsiteDetail
@@ -1472,9 +1542,13 @@ export default function Home() {
             connection={renderSiteConnection(selectedWebsite)}
             scanStatus={scanProgress[selectedWebsite.id] ?? null}
             websites={websites}
+            onUpload={setUploadTarget}
+            onFixIssue={(issueId) => { const target = issues.find((item) => item.id === issueId); if (target) void fixIssue(target); }}
           />
         </section>
       )}
+
+      {activeView === "dashboard" && websites.length > 0 && <UpcomingRenewals onOpenSite={(siteId) => openWebsiteDetail(siteId, "renewals")} />}
 
       {activeView === "dashboard" && (
         <section className="recent-grid" aria-label="Recent activity">
@@ -1662,6 +1736,10 @@ export default function Home() {
 
       {activeView === "team" && <McpAccessManager onNotice={setMessage} />}
 
+      {activeView === "settings" && <IntegrationsSettings onNotice={setMessage} />}
+
+      <PackageUploadDialog target={uploadTarget} onClose={() => setUploadTarget(null)} onDone={(text) => { setUploadTarget(null); setMessage(text); void refresh(); }} />
+
       {activeView === "dashboard" && <section className="system-settings">
         <div><span className="eyebrow">SYSTEM SETTINGS</span><strong>Organization accounts</strong><small>Database-backed sessions and membership-based access</small></div>
         <div><span className="eyebrow">AI PROVIDER</span><strong>{settings?.aiProvider ?? "Loading…"}</strong><small>{settings?.aiConfigured ? "Server-side model configured" : "AI environment config required"} · Optional. Current model provider integration: Ollama only.</small></div>
@@ -1742,12 +1820,14 @@ function WebsiteDetail({
   onNotice,
   connection,
   scanStatus,
+  onUpload,
+  onFixIssue,
 }: {
   site: Website;
   websites: Website[];
   issues: Issue[];
   history: Check[] | null;
-  tab: "overview" | "diagnostics" | "performance" | "accessibility" | "responsive" | "repair-history" | "cleanup" | "protection" | "backups" | "history" | "settings";
+  tab: "overview" | "software" | "performance" | "renewals" | "diagnostics" | "accessibility" | "responsive" | "repair-history" | "cleanup" | "protection" | "backups" | "history" | "settings";
   repairs: Array<{ issue: Issue; repair: Issue["repairs"][number] }>;
   busy: string | null;
   onHistory: () => void;
@@ -1757,6 +1837,8 @@ function WebsiteDetail({
   onNotice: (message: string) => void;
   connection: ReactNode;
   scanStatus: { scanId: string; status: string; withAi: boolean } | null;
+  onUpload: (target: UploadTarget) => void;
+  onFixIssue: (issueId: string) => void;
 }) {
   const check = site.checks[0] ?? null;
   const openIssues = issues.filter((issue) => issue.status !== "resolved");
@@ -1769,6 +1851,8 @@ function WebsiteDetail({
   };
   if (tab === "backups") return <BackupsManager websiteId={site.id} />;
   if (tab === "cleanup") return <CleanupManager websiteId={site.id} onNotice={onNotice} />;
+  if (tab === "renewals") return <RenewalsPanel websiteId={site.id} onNotice={onNotice} />;
+  if (tab === "software") return <SoftwarePanel websiteId={site.id} diagnostics={site.wordpressAgent?.diagnostics} issues={issues} onUpload={onUpload} onFix={onFixIssue} />;
   if (tab === "protection") return <><ProtectionManager websiteId={site.id} onNotice={onNotice} /><CloudflarePanel websiteId={site.id} onNotice={onNotice} /></>;
   if (tab === "overview") {
     return <div className="detail-content">
@@ -1820,7 +1904,7 @@ function WebsiteDetail({
   if (tab === "performance") {
     const samples = site.checks.filter((item) => item.responseTime !== null);
     const average = samples.length ? Math.round(samples.reduce((sum, item) => sum + (item.responseTime ?? 0), 0) / samples.length) : null;
-    return <div className="detail-content">
+    return <><PerformancePanel websiteId={site.id} onNotice={onNotice} /><details className="detail-content legacy-timing"><summary>Browser scan timings</summary>
       <h3>Availability response timing</h3><p>{average === null ? "No response-time samples are available." : `Average HTTP HEAD response: ${average} ms across ${samples.length} stored checks.`}</p>
       <p className="diagnostic-limit">Crawl resource count and transfer size are unique-resource totals across the scan. Timing summaries use valid page and viewport samples: median, 75th percentile, and maximum are reported separately; each page retains viewport-specific values. Transfer size is what the browser exposes through Resource Timing and can be understated for cross-origin resources without timing permission.</p>
       {browserIssues.length ? <div className="issue-list">{browserIssues.map((issue) => {
@@ -1831,7 +1915,7 @@ function WebsiteDetail({
         return <article className="repair-card" key={issue.id}><strong>{issue.title}</strong><p>{issue.description}</p>{metrics && <small>{Object.entries(metrics).filter(([, value]) => typeof value === "number").map(([key, value]) => `${key}: ${value}`).join(" · ")} {timing.join(" · ")}</small>}{Object.keys(finding).length > 0 && <details><summary>Browser evidence</summary><pre>{JSON.stringify(finding, null, 2)}</pre></details>}</article>;
       })}</div> : <p>No browser performance measurements are stored yet.</p>}
       <p className="diagnostic-limit">Browser timing and paint metrics are diagnostic observations, not a Lighthouse score or field Core Web Vitals measurement. Interaction to Next Paint requires real user interaction.</p>
-    </div>;
+    </details></>;
   }
   if (tab === "accessibility" || tab === "responsive") {
     return <div className="detail-content">

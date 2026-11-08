@@ -19,6 +19,10 @@ const fixIssueRoute = () => import("@/app/api/issues/[issueId]/fix/route").then(
 const protectionGetRoute = () => import("@/app/api/sites/[siteId]/protection/route").then((module) => module.GET);
 const protectionPutRoute = () => import("@/app/api/sites/[siteId]/protection/route").then((module) => module.PUT);
 const protectionPostRoute = () => import("@/app/api/sites/[siteId]/protection/route").then((module) => module.POST);
+const performanceGetRoute = () => import("@/app/api/sites/[siteId]/performance/route").then((module) => module.GET);
+const performancePostRoute = () => import("@/app/api/sites/[siteId]/performance/route").then((module) => module.POST);
+const renewalsGetRoute = () => import("@/app/api/sites/[siteId]/renewals/route").then((module) => module.GET);
+const renewalsPutRoute = () => import("@/app/api/sites/[siteId]/renewals/route").then((module) => module.PUT);
 const cloudflareGetRoute = () => import("@/app/api/sites/[siteId]/cloudflare/route").then((module) => module.GET);
 const cloudflarePostRoute = () => import("@/app/api/sites/[siteId]/cloudflare/route").then((module) => module.POST);
 const historyRoute = () => import("@/app/api/sites/[siteId]/history/route").then((module) => module.GET);
@@ -42,6 +46,9 @@ How the system works:
 - One-click maintenance (plugin 0.4.0+): fix_issue applies a finding's single fix (update a plugin with an available update, or reinstall a WordPress.org plugin whose code differs from the official checksums); update_plugins updates all WordPress.org plugins with updates. Packages come only from WordPress.org, every file is checked against official checksums, and the previous version is put back automatically if the update fails or breaks the site. Premium plugins (not on WordPress.org) must be updated from their vendor. Themes are covered the same way (plugin 0.7.0+): theme updates, WordPress.org themes whose files differ from the official package (reinstall), malware patterns in any theme, unused themes and known theme vulnerabilities; update_plugins without a list updates WordPress.org plugins and themes.
 - Protection (plugin 0.5.0+): get_protection shows each hardening measure (block PHP in uploads, protect sensitive files, code editor off, XML-RPC off, hide usernames, security headers, fake-crawler/attack-tool filter) with whether it is verified effective on the server, the self-healing and automatic-update settings, and recent alerts. apply_protection turns measures on/off through the plugin; set_protection switches self-healing (automatic safe cleanup of new malware files, max 3/day) and daily verified plugin updates. No setting makes a site unhackable; say so if asked.
 - Cloudflare edge protection: get_cloudflare_status shows whether the site's Cloudflare zone is connected and traffic is proxied; apply_cloudflare_protection adds the app's rules (PHP in uploads, sensitive files, fake crawlers on login/admin, attack tools, login challenge and rate limit) and keeps the owner's own rules. The owner connects a Cloudflare API token in the dashboard's Protection tab; tokens are never accepted through MCP.
+- Known vulnerabilities: findings with source vulnerability_feed come from the Wordfence Intelligence database (needs a free key in Settings → Integrations) and from WordPress.org's list of closed plugins (no key). fix_issue installs the fixed WordPress.org version; fix_issue with mode "remove" deactivates a vulnerable plugin into the quarantine until fixed. Premium plugins are fixed by uploading the vendor's zip in the app (website → Plugins & themes); the app scans it first. You cannot upload files.
+- Performance: get_performance returns the latest PageSpeed Insights results (mobile and desktop score, LCP, TBT, CLS, FCP, TTFB, real-visitor INP/LCP/CLS when Google has data), each failing audit explained with the plugin/theme that causes it, and the speed measures on the site. run_performance_test starts a new test (about a minute; needs a PageSpeed key in Settings). apply_speed_fixes turns measures on/off through the plugin (0.8.0+): page_cache, compression, browser_caching, defer_scripts, font_display_swap, trim_extras, lazy_load, webp_uploads.
+- Renewals: get_renewals returns SSL certificate, domain and hosting expiry dates (SSL and domain detected daily; hosting entered by the owner) with days left; set_renewal_date records a hosting (or unpublished domain) date. Reminders are emailed 30 days before, 10 days before and on expiry.
 
 Recommended workflow:
 1. list_websites, then list_issues for the site. When asked about a site's health or security, also run_security_check: a 200 response does not mean the site is healthy.
@@ -349,10 +356,10 @@ export function createWebsiteDoctorMcpServer(principal: RequestPrincipal, origin
   tool("fix_issue", {
     title: "Apply a finding's one-click fix",
     description: "Approve and queue the one-click fix for an issue: 'Plugin update available' findings update that WordPress.org plugin to the available version; 'Plugin code differs from the official release' findings reinstall it. Changes the live site; ask the user first. Compromise (security/integrity) findings are fixed together with start_cleanup instead. Follow get_repair_status with the returned repairId.",
-    inputSchema: { issueId: z.string().min(1).max(64), confirm: z.literal(true) },
+    inputSchema: { issueId: z.string().min(1).max(64), mode: z.enum(["fix", "remove"]).optional().describe("remove: for a vulnerable plugin/theme, deactivate it into the quarantine until a fixed version is installed."), confirm: z.literal(true) },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
-  }, async ({ issueId, confirm }) => {
-    const result = await callRoute(fixIssueRoute, `/api/issues/${encodeURIComponent(issueId)}/fix`, { method: "POST", body: { confirm }, params: { issueId }, headers: { "x-awd-interface": "mcp" } });
+  }, async ({ issueId, mode, confirm }) => {
+    const result = await callRoute(fixIssueRoute, `/api/issues/${encodeURIComponent(issueId)}/fix`, { method: "POST", body: { confirm, ...(mode ? { mode } : {}) }, params: { issueId }, headers: { "x-awd-interface": "mcp" } });
     return result.ok ? text(result.data) : failure(result);
   });
 
@@ -363,6 +370,60 @@ export function createWebsiteDoctorMcpServer(principal: RequestPrincipal, origin
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   }, async ({ siteId, plugins, confirm }) => {
     const result = await callRoute(cleanupPostRoute, `/api/sites/${encodeURIComponent(siteId)}/cleanup`, { method: "POST", body: { action: "update_plugins", ...(plugins ? { plugins } : {}), confirm }, params: { siteId }, headers: { "x-awd-interface": "mcp" } });
+    return result.ok ? text(result.data) : failure(result);
+  });
+
+  tool("get_performance", {
+    title: "Get PageSpeed results and speed fixes",
+    description: "Latest PageSpeed Insights results for mobile and desktop (score, lab metrics, real-visitor Core Web Vitals including INP when available), failing audits explained with the plugins/themes that cause them and the matching fix, the speed measures on the site, and the latest speed-fix run.",
+    inputSchema: { siteId: z.string().min(1).max(64) },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  }, async ({ siteId }) => {
+    const result = await callRoute(performanceGetRoute, `/api/sites/${encodeURIComponent(siteId)}/performance`, { params: { siteId } });
+    return result.ok ? text(result.data) : failure(result);
+  });
+
+  tool("run_performance_test", {
+    title: "Run a PageSpeed test",
+    description: "Start PageSpeed Insights tests for mobile and desktop in the background (about a minute). Then call get_performance.",
+    inputSchema: { siteId: z.string().min(1).max(64) },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async ({ siteId }) => {
+    const result = await callRoute(performancePostRoute, `/api/sites/${encodeURIComponent(siteId)}/performance`, { method: "POST", body: { action: "test" }, params: { siteId } });
+    return result.ok ? text(result.data) : failure(result);
+  });
+
+  tool("apply_speed_fixes", {
+    title: "Turn speed measures on or off",
+    description: "Queue speed measures through the site's plugin (0.8.0+). page_cache uses the active cache plugin or installs LiteSpeed Cache / Cache Enabler from WordPress.org first. The home page is checked after each change and broken changes are switched off again. Changes the live site; ask the user first.",
+    inputSchema: {
+      siteId: z.string().min(1).max(64),
+      changes: z.array(z.object({ measure: z.enum(["page_cache", "compression", "browser_caching", "defer_scripts", "font_display_swap", "trim_extras", "lazy_load", "webp_uploads"]), state: z.enum(["on", "off"]) })).min(1).max(8),
+      confirm: z.literal(true),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async ({ siteId, changes }) => {
+    const result = await callRoute(performancePostRoute, `/api/sites/${encodeURIComponent(siteId)}/performance`, { method: "POST", body: { action: "fix", changes }, params: { siteId }, headers: { "x-awd-interface": "mcp" } });
+    return result.ok ? text(result.data) : failure(result);
+  });
+
+  tool("get_renewals", {
+    title: "Get SSL, domain and hosting expiry dates",
+    description: "Return the SSL certificate, domain and hosting renewal dates for a website with status (ok, expiring, expired, missing SSL, unknown) and days left. SSL and domain are checked automatically on first request and daily.",
+    inputSchema: { siteId: z.string().min(1).max(64) },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  }, async ({ siteId }) => {
+    const result = await callRoute(renewalsGetRoute, `/api/sites/${encodeURIComponent(siteId)}/renewals`, { params: { siteId } });
+    return result.ok ? text(result.data) : failure(result);
+  });
+
+  tool("set_renewal_date", {
+    title: "Record a hosting or domain renewal date",
+    description: "Save the hosting renewal date (hosts don't publish it) or a domain expiry date the registry does not publish, so reminders go out 30 days, 10 days and on the day. expiresAt is YYYY-MM-DD; null clears it.",
+    inputSchema: { siteId: z.string().min(1).max(64), kind: z.enum(["hosting", "domain"]), expiresAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(), provider: z.string().max(120).optional(), notes: z.string().max(500).optional() },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async ({ siteId, kind, expiresAt, provider, notes }) => {
+    const result = await callRoute(renewalsPutRoute, `/api/sites/${encodeURIComponent(siteId)}/renewals`, { method: "PUT", body: { kind, expiresAt, provider: provider ?? null, notes: notes ?? null }, params: { siteId } });
     return result.ok ? text(result.data) : failure(result);
   });
 

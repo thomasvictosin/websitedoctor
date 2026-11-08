@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { db } from "./db.ts";
-import { allUpdateSteps, buildCleanupPlan, cleanupStepSchema, cleanupStepsDigest, fetchOfficialChecksums, fixPlanForIssue, pluginUpdateSteps, selectCleanupSteps, type CleanupPlan, type CleanupStep } from "./cleanup-plan.ts";
+import { allUpdateSteps, buildCleanupPlan, cleanupStepSchema, cleanupStepsDigest, compareVersions, fetchOfficialChecksums, fixPlanForIssue, pluginUpdateSteps, selectCleanupSteps, type CleanupPlan, type CleanupStep } from "./cleanup-plan.ts";
 import { checkWebsite } from "./monitor.ts";
 import { runAndStoreSecurityCheck } from "./monitoring-service.ts";
 import { notifySite } from "./protection.ts";
@@ -390,6 +390,13 @@ async function recordMaintenanceReport(
   });
   await db.verificationResult.create({ data: { repairId: repair.id, executionId: agentExecution.id, status: verificationStatus, method: "checksums_site_health_and_availability", result: execution.verification as Prisma.InputJsonValue } });
   await db.repairEvent.create({ data: { repairId: repair.id, eventType: `maintenance_${verificationStatus}`, actor: "central", details: { applied: applied.length, failed: failed.length, reasons: reasons.slice(0, 10) } } });
+  // Uploaded packages: record whether the install went through (the next sync then shows the new version).
+  const plannedSteps = (record(cleanup).steps as Array<{ operation: string; parameters: Record<string, string> }> | undefined) ?? [];
+  for (const [index, step] of plannedSteps.entries()) {
+    if (step.operation !== "install_package") continue;
+    const outcome = report.steps.find((item) => item.index === index);
+    await db.softwarePackage.updateMany({ where: { id: step.parameters.packageId, status: "installing" }, data: { status: outcome?.status === "applied" && verificationStatus !== "failed" ? "installed" : "failed" } });
+  }
   for (const step of report.steps.filter((item) => item.status === "applied" && (item.operation === "restore_run" || item.operation === "purge_quarantine"))) {
     const runId = (record(cleanup).steps as Array<{ operation: string; parameters: Record<string, string> }> | undefined)?.[step.index]?.parameters?.runId;
     if (!runId) continue;
@@ -409,7 +416,7 @@ async function recordMaintenanceReport(
 }
 
 /** One-click fix for a finding (plugin update or reinstall). */
-export async function startIssueFix(input: { issueId: string; websiteId: string; organizationId: string; actor: CleanupActor }) {
+export async function startIssueFix(input: { issueId: string; websiteId: string; organizationId: string; actor: CleanupActor; mode?: "fix" | "remove" }) {
   const [issue, agent] = await Promise.all([
     db.issue.findFirst({ where: { id: input.issueId, websiteId: input.websiteId }, select: { id: true, fingerprint: true, status: true, evidence: true } }),
     db.wordPressAgent.findFirst({ where: { websiteId: input.websiteId, revokedAt: null }, select: { diagnostics: true, lastSeenAt: true } }),
@@ -422,10 +429,35 @@ export async function startIssueFix(input: { issueId: string; websiteId: string;
     const [major, minor] = typeof version === "string" ? version.split(".").map(Number) : [0, 0];
     if (!(major > 0 || minor >= 7)) throw new CleanupError(`Theme fixes need AI Website Doctor 0.7.0 or later on the site (it reports ${typeof version === "string" ? version : "an older version"}).`, 409);
   }
-  const fix = fixPlanForIssue(issue.fingerprint, { ...record(agent!.diagnostics), __issueEvidence: issue.evidence });
+  const fix = input.mode === "remove" ? removalPlanForIssue(issue.fingerprint, agent!.diagnostics) : fixPlanForIssue(issue.fingerprint, { ...record(agent!.diagnostics), __issueEvidence: issue.evidence });
   if (!fix) throw new CleanupError("This finding has no one-click fix; follow its recommendation instead.", 400);
   if (!fix.steps.length) throw new CleanupError(fix.skipped.join(" ") || "There is nothing to fix.", 409);
   return startCleanup({ websiteId: input.websiteId, organizationId: input.organizationId, planDigest: "fix", include: [], actor: input.actor, explicit: { steps: fix.steps, title: fix.title, issueId: issue.id, mode: "maintenance" } });
+}
+
+/**
+ * "Remove until fixed" for a vulnerable plugin or theme (for example a premium
+ * plugin whose fixed version must come from the vendor): deactivate it and
+ * keep it in the quarantine, from where it can be restored.
+ */
+export function removalPlanForIssue(fingerprint: string, diagnostics: unknown) {
+  const data = record(diagnostics);
+  const plugin = /^vuln:plugin-([a-z0-9-]+):/.exec(fingerprint);
+  if (plugin) {
+    const installed = (Array.isArray(data.plugins) ? data.plugins.map(record) : []).find((item) => typeof item.file === "string" && item.file.split("/")[0] === plugin[1]);
+    if (!installed || typeof installed.file !== "string") return { steps: [], title: "Remove plugin", skipped: ["The plugin is no longer installed."] };
+    const step = { description: `Deactivate ${String(installed.name)} ${String(installed.version)} and move it to the quarantine until a fixed version is installed.`, operation: "quarantine_plugin" as const, parameters: { plugin: installed.file, expectedVersion: String(installed.version ?? "") } };
+    return cleanupStepSchema.safeParse(step).success ? { steps: [step], title: `Remove vulnerable ${String(installed.name)} until fixed`, skipped: [] } : { steps: [], title: "Remove plugin", skipped: ["The plugin cannot be removed automatically."] };
+  }
+  const theme = /^vuln:theme-([a-z0-9_-]+):/.exec(fingerprint);
+  if (theme) {
+    const installed = (Array.isArray(data.themes) ? data.themes.map(record) : []).find((item) => item.stylesheet === theme[1]);
+    if (!installed) return { steps: [], title: "Remove theme", skipped: ["The theme is no longer installed."] };
+    if (installed.active || installed.parentOfActive) return { steps: [], title: "Remove theme", skipped: ["This is the active theme (or its parent); switch to another theme before removing it."] };
+    const step = { description: `Move the unused ${String(installed.name)} theme to the quarantine until a fixed version is installed.`, operation: "quarantine_theme" as const, parameters: { stylesheet: String(installed.stylesheet), expectedVersion: String(installed.version ?? "") } };
+    return cleanupStepSchema.safeParse(step).success ? { steps: [step], title: `Remove vulnerable ${String(installed.name)} theme`, skipped: [] } : { steps: [], title: "Remove theme", skipped: ["The theme cannot be removed automatically."] };
+  }
+  return null;
 }
 
 /** One-click update of WordPress.org plugins with available updates (all, or the listed files). */
@@ -511,4 +543,52 @@ export async function expireStaleRuns(websiteId: string) {
     await db.repairEvent.create({ data: { repairId: run.id, eventType: lost ? "cleanup_lost" : "cleanup_expired", actor: "central", details: { reason } } });
     await notifySite(websiteId, "maintenance", `${String(proposal.issue ?? "Change")} did not finish`, reason);
   }
+}
+
+export const PERFORMANCE_MEASURE_TITLES: Record<string, string> = {
+  page_cache: "Page caching",
+  compression: "Text compression",
+  browser_caching: "Browser caching",
+  defer_scripts: "Defer non-critical JavaScript",
+  font_display_swap: "Show text while fonts load",
+  trim_extras: "Remove unused WordPress extras",
+  lazy_load: "Lazy-load images and videos",
+  webp_uploads: "WebP for new uploads",
+};
+
+/** Latest WordPress.org version of a plugin (for installing a cache plugin). */
+async function latestWordPressOrgVersion(slug: string, fetcher: typeof fetch = fetch) {
+  const response = await fetcher(`https://api.wordpress.org/plugins/info/1.2/?action=plugin_information&request%5Bslug%5D=${encodeURIComponent(slug)}&request%5Bfields%5D%5Bsections%5D=0`, { signal: AbortSignal.timeout(10_000) });
+  const body = record(await response.json().catch(() => ({})));
+  return typeof body.version === "string" ? body.version : null;
+}
+
+/**
+ * Turn performance measures on or off through the approved executor
+ * (plugin 0.8.0+). Page caching uses the cache plugin already active; when
+ * there is none, LiteSpeed Cache (LiteSpeed servers) or Cache Enabler is
+ * installed from WordPress.org first, verified against official checksums.
+ */
+export async function startPerformanceChange(input: { websiteId: string; organizationId: string; changes: Array<{ measure: string; state: "on" | "off" }>; actor: CleanupActor; fetcher?: typeof fetch }) {
+  const agent = await db.wordPressAgent.findFirst({ where: { websiteId: input.websiteId, revokedAt: null }, select: { diagnostics: true, lastSeenAt: true } });
+  if (!agent || agent.lastSeenAt.getTime() < Date.now() - 15 * 60_000) throw new CleanupError("The WordPress plugin must be connected and online to change performance settings.", 409);
+  const version = String(record(record(agent.diagnostics).site).pluginVersion ?? "0");
+  if (compareVersions(version, "0.8.0") < 0) throw new CleanupError(`Performance fixes need AI Website Doctor 0.8.0 or later on the site (it reports ${version}).`, 409);
+  const performance = record(record(agent.diagnostics).performance);
+  const steps: CleanupStep[] = [];
+  for (const { measure, state } of input.changes) {
+    if (measure === "page_cache" && state === "on" && !(Array.isArray(performance.cachePlugins) && performance.cachePlugins.length)) {
+      const slug = /litespeed/i.test(String(performance.server ?? "")) ? "litespeed-cache" : "cache-enabler";
+      const installed = (Array.isArray(record(agent.diagnostics).plugins) ? (record(agent.diagnostics).plugins as unknown[]).map(record) : []).some((plugin) => typeof plugin.file === "string" && plugin.file.startsWith(`${slug}/`));
+      if (!installed) {
+        const latest = await latestWordPressOrgVersion(slug, input.fetcher);
+        if (!latest) throw new CleanupError(`WordPress.org could not be reached to look up ${slug}; try again.`, 502);
+        steps.push({ description: `Install ${slug === "litespeed-cache" ? "LiteSpeed Cache" : "Cache Enabler"} ${latest} from WordPress.org for page caching.`, operation: "install_plugin", parameters: { slug, version: latest, activate: "yes" } });
+      }
+    }
+    steps.push({ description: `Turn ${state} ${PERFORMANCE_MEASURE_TITLES[measure] ?? measure}.`, operation: "set_performance", parameters: { measure, state } });
+  }
+  if (!steps.length || !steps.every((step) => cleanupStepSchema.safeParse(step).success)) throw new CleanupError("Unknown performance measure.", 400);
+  const changes = steps.filter((step) => step.operation === "set_performance");
+  return startCleanup({ websiteId: input.websiteId, organizationId: input.organizationId, planDigest: "performance", include: [], actor: input.actor, explicit: { steps, title: changes.length === 1 ? changes[0].description.replace(/\.$/, "") : `Apply ${changes.length} speed fixes`, mode: "maintenance" } });
 }
