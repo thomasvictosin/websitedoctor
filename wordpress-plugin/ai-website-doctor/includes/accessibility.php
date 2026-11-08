@@ -93,7 +93,8 @@ function awd_a11y_name_for(string $tag, string $attributes, string $inner): stri
         $href = (string) awd_a11y_attr($attributes, 'href');
         $home = (array) wp_parse_url(home_url('/'));
         $target = (array) wp_parse_url($href);
-        $same = $href !== '' && $href[0] !== '#' && (empty($target['host']) || strtolower((string) $target['host']) === strtolower((string) ($home['host'] ?? '')));
+        $bare = static fn ($host) => (string) preg_replace('/^www\./', '', strtolower((string) $host));
+        $same = $href !== '' && $href[0] !== '#' && (empty($target['host']) || $bare($target['host']) === $bare($home['host'] ?? ''));
         if ($same) {
             $path = trim((string) ($target['path'] ?? ''), '/');
             $homePath = trim((string) ($home['path'] ?? ''), '/');
@@ -224,6 +225,70 @@ function awd_a11y_allow_zoom(string $html): string
     }, $html);
 }
 
+/**
+ * Controls that page scripts build in the browser (slider dots and arrows, links the browser splits
+ * out of broken markup, form fields whose label the theme hides) never appear in the HTML we filter.
+ * This small script names them once they exist. It only adds a name where there is none.
+ */
+function awd_a11y_runtime_script(bool $names, bool $labels): string
+{
+    $flags = wp_json_encode(array('names' => $names, 'labels' => $labels));
+    $js = <<<'JS'
+(function (cfg) {
+  var D = document;
+  function text(el) { return (el.textContent || '').replace(/\s+/g, ' ').trim(); }
+  function attr(el, name) { var v = el.getAttribute(name); return v && v.trim() ? v.trim() : ''; }
+  function named(el) {
+    return attr(el, 'aria-label') || attr(el, 'aria-labelledby') || attr(el, 'title') || text(el)
+      || el.querySelector('img[alt]:not([alt=""]),[aria-label]:not([aria-label=""]),svg title');
+  }
+  function hidden(el) { var s = getComputedStyle(el); return s.display === 'none' || s.visibility === 'hidden'; }
+  function human(s) {
+    try { s = decodeURIComponent(s); } catch (e) {}
+    s = s.replace(/\.[a-z0-9]{2,5}$/i, '').replace(/[-_\s]+/g, ' ').trim();
+    if (!s || s.length > 60 || !/[a-z]/i.test(s)) return '';
+    return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+  }
+  function each(selector, fn) { Array.prototype.forEach.call(D.querySelectorAll(selector), fn); }
+  var DOTS = '.owl-dot,.swiper-pagination-bullet,.tp-bullet,.slick-dots li>button,.flex-control-paging a,.carousel-indicators>*,.splide__pagination__page,.glide__bullet,.flickity-page-dot';
+  var PREV = '.owl-prev,.swiper-button-prev,.slick-prev,.flex-prev,.tp-leftarrow,.carousel-control-prev,.splide__arrow--prev,.glide__arrow--left,.flickity-prev-next-button.previous';
+  var NEXT = '.owl-next,.swiper-button-next,.slick-next,.flex-next,.tp-rightarrow,.carousel-control-next,.splide__arrow--next,.glide__arrow--right,.flickity-prev-next-button.next';
+  function fix() {
+    if (cfg.names) {
+      each(DOTS, function (el) { if (!named(el)) el.setAttribute('aria-label', 'Go to slide ' + (Array.prototype.indexOf.call(el.parentNode.children, el) + 1)); });
+      each(PREV, function (el) { if (!named(el)) el.setAttribute('aria-label', 'Previous slide'); });
+      each(NEXT, function (el) { if (!named(el)) el.setAttribute('aria-label', 'Next slide'); });
+      each('a[href]', function (a) {
+        var href = a.getAttribute('href') || '';
+        if (named(a) || /^(#|javascript:|mailto:|tel:)/i.test(href)) return;
+        var url; try { url = new URL(href, location.href); } catch (e) { return; }
+        if (url.host.replace(/^www\./, '') !== location.host.replace(/^www\./, '')) return;
+        var segment = url.pathname.replace(/\/+$/, '').split('/').pop();
+        var label = segment ? human(segment) : 'Home';
+        if (label) a.setAttribute('aria-label', label);
+      });
+    }
+    if (cfg.labels) {
+      each('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=reset]):not([type=image]),select,textarea', function (field) {
+        if (hidden(field) || attr(field, 'aria-label') || attr(field, 'aria-labelledby') || attr(field, 'title')) return;
+        var labels = field.labels ? Array.prototype.slice.call(field.labels) : [];
+        if (labels.some(function (l) { return !hidden(l) && text(l); })) return;
+        var label = labels.map(text).filter(Boolean)[0] || attr(field, 'placeholder')
+          || human((field.getAttribute('name') || '').replace(/^.*\[([^\]]+)\]$/, '$1')) || (field.type === 'search' ? 'Search' : '');
+        if (label) field.setAttribute('aria-label', label.slice(0, 120));
+      });
+    }
+  }
+  var queued = false;
+  function soon() { if (queued) return; queued = true; setTimeout(function () { queued = false; fix(); }, 250); }
+  if (D.readyState === 'loading') D.addEventListener('DOMContentLoaded', fix); else fix();
+  window.addEventListener('load', fix);
+  if (window.MutationObserver) new MutationObserver(soon).observe(D.documentElement, { childList: true, subtree: true });
+})(__AWD_FLAGS__);
+JS;
+    return '<script id="awd-a11y-runtime">' . str_replace('__AWD_FLAGS__', (string) $flags, $js) . '</script>';
+}
+
 /** Applies the switched-on accessibility fixes to one HTML document. */
 function awd_a11y_filter_html(string $html, array $enabled): string
 {
@@ -242,6 +307,11 @@ if (function_exists('add_action') && function_exists('get_option')) {
         $enabled = array();
         foreach (array_keys(awd_a11y_measures()) as $id) if (function_exists('awd_performance_enabled') && awd_performance_enabled($id)) $enabled[$id] = true;
         if (!$enabled) return;
+        if (!empty($enabled['a11y_names']) || !empty($enabled['a11y_form_labels'])) {
+            add_action('wp_footer', static function () use ($enabled) {
+                echo awd_a11y_runtime_script(!empty($enabled['a11y_names']), !empty($enabled['a11y_form_labels'])); // phpcs:ignore WordPress.Security.EscapeOutput -- fixed script, flags are JSON.
+            }, 99);
+        }
         ob_start(static function ($buffer) use ($enabled) {
             if (!is_string($buffer)) return $buffer;
             foreach (headers_list() as $header) {

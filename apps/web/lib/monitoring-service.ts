@@ -112,7 +112,13 @@ export async function runAndStoreCheck(
     data: { websiteId: website.id, scanType: "availability_and_browser", initiatedBy },
   });
   try {
-    const result = await checkSite(website.url);
+    let result = await checkSite(website.url);
+    // One slow response (a shared host under load, a cache rebuild) is not an outage: ask once more
+    // before recording the site as down and raising a critical alert.
+    if (!result.available && result.statusCode === null) {
+      await new Promise((resolve) => setTimeout(resolve, dependencies.checkWebsite ? 0 : 5_000));
+      result = await checkSite(website.url);
+    }
     const checkedAt = new Date();
     // SiteCheck has no finalUrl column; the final URL is kept in the evidence record below.
     const { finalUrl: _finalUrl, ...checkColumns } = result;
@@ -130,13 +136,16 @@ export async function runAndStoreCheck(
         console.error(`Security probe failed for ${website.id}:`, error instanceof Error ? error.message : "unknown error");
       }
     }
-    const scanSite = result.available ? dependencies.scanBrowserSite ?? await loadBrowserScanner() : null;
+    // A browser result collected elsewhere (the GitHub runner) already proves the pages loaded moments
+    // ago; keep it even if this server's own request just timed out.
+    const externalResult = Boolean(dependencies.scanBrowserSite) && initiatedBy === "scheduled_browser";
+    const scanSite = result.available || externalResult ? dependencies.scanBrowserSite ?? await loadBrowserScanner() : null;
     if (result.available && !scanSite) {
       await db.diagnosticResult.create({
         data: { scanSessionId: session.id, category: "browser", status: "unavailable", summary: { reason: "The browser runtime is not available on this deployment; availability and security checks still ran." } },
       });
     }
-    if (result.available && scanSite) {
+    if ((result.available || externalResult) && scanSite) {
       browser = await scanSite(website.url);
       const browserDiagnostic = await db.diagnosticResult.create({
         data: {

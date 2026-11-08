@@ -495,7 +495,7 @@ if (!function_exists('esc_attr')) { function esc_attr(string $value): string { r
 if (!function_exists('wp_strip_all_tags')) { function wp_strip_all_tags(string $value): string { return strip_tags($value); } }
 $page = '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"></head><body>'
     . '<a href="https://www.facebook.com/brand"><i class="fab fa-facebook-f"></i></a>'
-    . '<a href="https://example.com/about-us/"><svg></svg></a>'
+    . '<a href="https://example.com/about-us/"><svg></svg></a><a href="https://www.example.com"><span></span></a>'
     . '<a href="https://example.com/contact/">Contact us</a>'
     . '<a href="#"><span class="dot"></span></a>'
     . '<a class="menu-item-link" href="https://other.example/x"><span></span></a>'
@@ -511,11 +511,13 @@ $page = '<!doctype html><html><head><meta name="viewport" content="width=device-
     . '<label>Phone <input name="phone"></label><input type="hidden" name="token"><select name="country_code"></select><input type="submit" value="Send"></form>'
     . '</body></html>';
 $all = array('a11y_zoom' => true, 'a11y_names' => true, 'a11y_form_labels' => true);
-$fixed = awd_a11y_filter_html($page, $all);
+$fixed = awd_a11y_filter_html($page, $all) . awd_a11y_runtime_script(true, true);
 foreach (array(
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
     '<a aria-label="Facebook" href="https://www.facebook.com/brand">',
     '<a aria-label="About us" href="https://example.com/about-us/">',
+    '<a aria-label="Home" href="https://www.example.com">',
+    '<script id="awd-a11y-runtime">',
     '<a href="https://example.com/contact/">Contact us</a>',
     '<button aria-label="Menu" class="navbar-toggle">',
     '<button aria-label="Search"><i class="fa fa-search"></i></button>',

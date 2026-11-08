@@ -299,13 +299,27 @@ const CHECK_PAGE = `() => {
   const contrast = (a,b) => { const x=luminance(a), y=luminance(b); return (Math.max(x,y)+.05)/(Math.min(x,y)+.05); };
   const background = (el) => { for (let n=el; n; n=n.parentElement) { const c=rgb(getComputedStyle(n).backgroundColor); if (c && getComputedStyle(n).backgroundColor !== 'rgba(0, 0, 0, 0)') return c; } return [255,255,255]; };
   const missingAlt = [...document.images].filter((img) => !img.hasAttribute('alt')).slice(0,20).map(describe);
-  const unlabeled = [...document.querySelectorAll('input:not([type=hidden]),select,textarea')].filter((el) => !el.labels?.length && !el.getAttribute('aria-label') && !el.getAttribute('aria-labelledby')).slice(0,20).map(describe);
+  const unlabeled = [...document.querySelectorAll('input:not([type=hidden]),select,textarea')].filter((el) => visible(el) && !el.labels?.length && !el.getAttribute('aria-label') && !el.getAttribute('aria-labelledby')).slice(0,20).map(describe);
   const hiddenNavs = [...document.querySelectorAll('nav,[role=navigation]')].filter((el) => !visible(el));
   const namedMenuControl = [...document.querySelectorAll('button,[role=button],a')].some((el) => visible(el) && (/menu|navigation/i.test((el.innerText||'')+' '+(el.getAttribute('aria-label')||'')) || (el.getAttribute('aria-controls') && hiddenNavs.some((nav) => nav.id === el.getAttribute('aria-controls')))));
   // Menu plugins and themes often draw the hamburger as a styled div or span (Superfly's sfm-navicon,
   // Bootstrap's navbar-toggler): visitors can open the menu, so it is not missing.
   const iconMenuControl = [...document.querySelectorAll('[class*=navicon],[class*=hamburger],[class*=burger],[class*=menu-toggle],[class*=nav-toggle],[class*=navbar-toggle],[class*=menu-trigger],[class*=menu-btn],[class*=menu-button],[class*=menu-icon],[class*=mobile-menu-open],[class*=offcanvas-toggle]')].some((el) => { const r = el.getBoundingClientRect(); return visible(el) && r.width <= 200 && r.height <= 200; });
-  const hasMenuControl = namedMenuControl || iconMenuControl;
+  // The drawn hamburger itself: a small visible box holding 2–4 empty bars stacked vertically
+  // (for example Bauen's <div class="nav-button"><span></span><span></span><span></span></div>).
+  const drawnHamburger = [...document.querySelectorAll('div,span,label,i')].some((el) => {
+    const bars = [...el.children];
+    if (bars.length < 2 || bars.length > 4 || (el.textContent || '').trim()) return false;
+    const style = getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+    // The bars are often positioned outside a zero-height box, so judge size and visibility by the bars.
+    const boxes = bars.map((bar) => bar.getBoundingClientRect());
+    const top = Math.min(...boxes.map((box) => box.top)), bottom = Math.max(...boxes.map((box) => box.bottom));
+    const left = Math.min(...boxes.map((box) => box.left)), right = Math.max(...boxes.map((box) => box.right));
+    if (right - left > 80 || bottom - top > 80 || right <= 0 || bottom <= 0 || left >= innerWidth) return false;
+    return boxes.every((box, i) => box.width > box.height && box.width >= 8 && box.height > 0 && box.height <= 8 && (i === 0 || box.top > boxes[i - 1].top));
+  });
+  const hasMenuControl = namedMenuControl || iconMenuControl || drawnHamburger;
   const navIssue = innerWidth <= 600 && hiddenNavs.length > 0 && !hasMenuControl ? hiddenNavs.slice(0,5).map(describe) : [];
   const root=document.documentElement;
   const documentWidth=Math.max(root.scrollWidth,document.body?.scrollWidth ?? 0);
