@@ -9,6 +9,7 @@
  * - a11y_names: gives icon-only links and buttons an aria-label derived from
  *   where they point (social networks, email, phone, a page of this site) or
  *   from their icon class (menu, search, close, cart…). Unknown ones are left alone.
+ *   Embedded frames without a title get one from their address (Map, YouTube video…).
  * - a11y_form_labels: gives form fields without any label an aria-label from
  *   their placeholder or field name.
  */
@@ -21,7 +22,7 @@ function awd_a11y_measures(): array
 {
     return array(
         'a11y_zoom' => array('title' => 'Allow zooming on phones', 'description' => 'Removes the setting that stops visitors from pinch-zooming, so people with low vision can enlarge text.', 'group' => 'accessibility'),
-        'a11y_names' => array('title' => 'Name icon-only links and buttons', 'description' => 'Icon links and buttons (social icons, menu, search, close) get a spoken name for screen readers, taken from where they point or what the icon is. Nothing visible changes.', 'group' => 'accessibility'),
+        'a11y_names' => array('title' => 'Name icon-only links and buttons', 'description' => 'Icon links and buttons (social icons, menu, search, close) and embedded maps and videos get a spoken name for screen readers, taken from where they point or what the icon is. Nothing visible changes.', 'group' => 'accessibility'),
         'a11y_form_labels' => array('title' => 'Label form fields', 'description' => 'Form fields without a label get one for screen readers, taken from their placeholder or field name. Nothing visible changes.', 'group' => 'accessibility'),
     );
 }
@@ -141,6 +142,44 @@ function awd_a11y_name_controls(string $html): string
     );
 }
 
+/** A title for an embedded frame (map, video, booking widget) taken from where it points. */
+function awd_a11y_frame_title(string $attributes): string
+{
+    $src = '';
+    foreach (array('src', 'data-src', 'data-lazy-src') as $name) {
+        $value = trim((string) awd_a11y_attr($attributes, $name));
+        if ($value !== '' && stripos($value, 'about:') !== 0 && stripos($value, 'data:') !== 0) { $src = $value; break; }
+    }
+    if ($src === '') return 'Embedded content';
+    $parsed = (array) wp_parse_url(strpos($src, '//') === 0 ? 'https:' . $src : $src);
+    $host = strtolower((string) ($parsed['host'] ?? ''));
+    $path = strtolower((string) ($parsed['path'] ?? ''));
+    if ($host === '') return 'Embedded content';
+    if (preg_match('/(^|\.)google\.[a-z.]+$/', $host) && strpos($path, '/maps') === 0) return 'Map';
+    if (strpos($host, 'maps.') === 0 || strpos($host, 'openstreetmap') !== false) return 'Map';
+    if (strpos($host, 'youtube') !== false || $host === 'youtu.be') return 'YouTube video';
+    if (strpos($host, 'vimeo') !== false) return 'Vimeo video';
+    if (strpos($host, 'calendly') !== false) return 'Booking calendar';
+    if (preg_match('/(^|\.)google\.com$/', $host) && strpos($path, '/forms') !== false) return 'Form';
+    foreach (AWD_A11Y_SOCIAL as $needle => $label) if (strpos($host, $needle) !== false) return $label . ' content';
+    return 'Embedded content from ' . preg_replace('/^www\./', '', $host);
+}
+
+function awd_a11y_name_frames(string $html): string
+{
+    return (string) preg_replace_callback(
+        '/<(script|style|template|textarea|noscript)\b.*?<\/\1\s*>|<iframe\b([^>]*)>/is',
+        static function (array $m): string {
+            if (($m[1] ?? '') !== '') return $m[0];
+            $attributes = $m[2];
+            if (awd_a11y_has_name($attributes)) return $m[0];
+            if (preg_match('/\baria-hidden\s*=\s*["\']?true|\brole\s*=\s*["\']?(?:none|presentation)\b/i', $attributes)) return $m[0];
+            return awd_a11y_add_attribute('iframe', $m[0], 'title', awd_a11y_frame_title($attributes));
+        },
+        $html
+    );
+}
+
 function awd_a11y_label_fields(string $html): string
 {
     preg_match_all('/<label\b[^>]*\bfor\s*=\s*(?:"([^"]+)"|\'([^\']+)\'|([^\s>]+))/i', $html, $for);
@@ -191,7 +230,7 @@ function awd_a11y_filter_html(string $html, array $enabled): string
     if ($html === '' || stripos($html, '<html') === false || strlen($html) > 5000000) return $html;
     $original = $html;
     if (!empty($enabled['a11y_zoom'])) $html = awd_a11y_allow_zoom($html);
-    if (!empty($enabled['a11y_names'])) $html = awd_a11y_name_controls($html);
+    if (!empty($enabled['a11y_names'])) $html = awd_a11y_name_frames(awd_a11y_name_controls($html));
     if (!empty($enabled['a11y_form_labels'])) $html = awd_a11y_label_fields($html);
     // A regex failure (backtrack limit on unusual markup) returns '' — never send a blank page.
     return $html !== '' ? $html : $original;

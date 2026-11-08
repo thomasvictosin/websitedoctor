@@ -876,10 +876,10 @@ export default function Home() {
     if (issue.fingerprint.startsWith("perf:")) return { label: "See speed fixes", confirm: null, action: "performance" as const };
     // Accessibility findings the plugin can fix on every page as it is sent (0.9.0+).
     const a11yMeasure = /^browser:accessibility-meta-viewport:/.test(issue.fingerprint) ? "a11y_zoom"
-      : /^browser:accessibility-(?:link-name|button-name):/.test(issue.fingerprint) ? "a11y_names"
+      : /^browser:accessibility-(?:link-name|button-name|frame-title):/.test(issue.fingerprint) ? "a11y_names"
       : /^browser:(?:accessibility-(?:label|select-name):|missing-form-label:)/.test(issue.fingerprint) ? "a11y_form_labels" : null;
     if (a11yMeasure) return {
-      label: a11yMeasure === "a11y_zoom" ? "Fix: allow zooming" : a11yMeasure === "a11y_names" ? "Fix: name icon links" : "Fix: label form fields",
+      label: a11yMeasure === "a11y_zoom" ? "Fix: allow zooming" : a11yMeasure === "a11y_names" ? (issue.fingerprint.includes("frame-title") ? "Fix: name maps and videos" : "Fix: name icon links") : "Fix: label form fields",
       confirm: a11yMeasure === "a11y_zoom"
         ? "Allow visitors to pinch-zoom on every page? The plugin removes the zoom block from the page header as pages are sent; theme files are not edited and you can switch it off under Accessibility."
         : a11yMeasure === "a11y_names"

@@ -504,6 +504,9 @@ $page = '<!doctype html><html><head><meta name="viewport" content="width=device-
     . '<button aria-label="Close dialog"><i class="fa fa-times"></i></button>'
     . '<a href="mailto:hi@example.com"><img src="m.png" alt="Mail us"></a>'
     . '<script>var t = "<a href=\"https://twitter.com/x\"><i></i></a>";</script>'
+    . '<iframe src="https://www.google.com/maps/embed?pb=1" width="600"></iframe><iframe title="Our video" src="https://www.youtube.com/embed/x"></iframe>'
+    . '<iframe data-src="https://player.vimeo.com/video/1" src="about:blank"></iframe><iframe src="https://widgets.example.org/w" aria-hidden="true"></iframe>'
+    . '<noscript><iframe src="https://www.googletagmanager.com/ns.html"></iframe></noscript>'
     . '<form><input type="email" name="form_fields[email]" placeholder="Your email"><label for="n">Name</label><input id="n" name="name">'
     . '<label>Phone <input name="phone"></label><input type="hidden" name="token"><select name="country_code"></select><input type="submit" value="Send"></form>'
     . '</body></html>';
@@ -527,6 +530,11 @@ foreach (array(
     '<input type="submit" value="Send">',
     '<a href="#"><span class="dot"></span></a>',
     '<a class="menu-item-link" href="https://other.example/x"><span></span></a>',
+    '<iframe title="Map" src="https://www.google.com/maps/embed?pb=1"',
+    '<iframe title="Our video" src="https://www.youtube.com/embed/x">',
+    '<iframe title="Vimeo video" data-src="https://player.vimeo.com/video/1"',
+    '<iframe src="https://widgets.example.org/w" aria-hidden="true">',
+    '<noscript><iframe src="https://www.googletagmanager.com/ns.html"></iframe></noscript>',
 ) as $expected) {
     if (strpos($fixed, $expected) === false) throw new RuntimeException('Accessibility fix missing or wrong: ' . $expected . "\n" . $fixed);
 }

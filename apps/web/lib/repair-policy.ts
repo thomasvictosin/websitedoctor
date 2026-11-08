@@ -221,8 +221,8 @@ function manualRemediationGuidance(issueFingerprint: string, description: string
     "Make each one at least 24×24 pixels, or leave at least 24 pixels between neighbouring targets: increase the icon size or padding in the widget's style settings, or the spacing between items.",
     "This changes the layout, so it is never made automatically. The next daily browser check confirms the fix.",
   ];
-  if (/browser:accessibility-(?:link-name|button-name|label|select-name|meta-viewport):|browser:missing-form-label:/.test(fingerprint)) return [
-    "Use the Fix button: AI Website Doctor 0.9.0+ adds the missing names and labels (or removes the zoom block) to every page as it is sent, without editing the theme. It can be switched off under Accessibility.",
+  if (/browser:accessibility-(?:link-name|button-name|frame-title|label|select-name|meta-viewport):|browser:missing-form-label:/.test(fingerprint)) return [
+    "Use the Fix button: AI Website Doctor 0.9.0+ adds the missing names and labels (or removes the zoom block) to every page as it is sent, without editing the theme; 0.9.1+ also names embedded maps and videos. It can be switched off under Accessibility.",
     "For a permanent fix in the source, add the text in the widget or block settings (for example the icon's \"Aria label\" or \"Title\" field in Elementor, or a label for the form field).",
     "The next daily browser check confirms the finding is gone.",
   ];

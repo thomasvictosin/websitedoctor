@@ -9,8 +9,10 @@
  *    is turned on; others are reported); the app installs one first if none.
  *  - compression / browser_caching: .htaccess rules between our own markers
  *    (Apache and LiteSpeed; nginx ignores them and the check says so).
- *  - defer_scripts: front-end scripts load with WordPress's "defer" strategy;
- *    jQuery stays blocking and WordPress keeps order-sensitive scripts blocking.
+ *  - defer_scripts: front-end footer scripts load with WordPress's "defer"
+ *    strategy; header scripts and jQuery stay as they are (plugins print inline
+ *    header code that calls them at once), and WordPress keeps order-sensitive
+ *    scripts blocking.
  *  - font_display_swap: display=swap on Google Fonts plus early connections.
  *  - trim_extras: no emoji script, embed script or dashicons for visitors.
  *  - lazy_load: native lazy loading for images and iframes stays on.
@@ -33,7 +35,7 @@ function awd_performance_measures(): array
         'page_cache' => array('title' => 'Page caching', 'description' => 'Serves ready-made pages instead of building every page with PHP.'),
         'compression' => array('title' => 'Text compression', 'description' => 'Compresses HTML, CSS and JavaScript (gzip/Brotli) on Apache and LiteSpeed servers.'),
         'browser_caching' => array('title' => 'Browser caching', 'description' => 'Lets returning visitors reuse images, CSS, JavaScript and fonts.'),
-        'defer_scripts' => array('title' => 'Defer non-critical JavaScript', 'description' => 'Theme and plugin scripts load after the page is shown; jQuery stays as it is.'),
+        'defer_scripts' => array('title' => 'Defer non-critical JavaScript', 'description' => 'Theme and plugin scripts at the end of the page load after the page is shown; header scripts and jQuery stay as they are.'),
         'font_display_swap' => array('title' => 'Show text while fonts load', 'description' => 'font-display: swap for Google Fonts and an early connection to the font server.'),
         'trim_extras' => array('title' => 'Remove unused WordPress extras', 'description' => 'No emoji script, embed script or dashicons for visitors who are not logged in.'),
         'lazy_load' => array('title' => 'Lazy-load images and videos', 'description' => 'Images and embedded videos below the first screen load when scrolled to.'),
@@ -273,6 +275,15 @@ function awd_render_performance_rows(array $state, string $group): void
 // ---- Runtime measures -------------------------------------------------------
 
 if (function_exists('add_filter') && function_exists('get_option')) {
+    // A new plugin version can change what the switched-on measures do to pages (0.9.1 stopped deferring
+    // header scripts). Cached pages still carry the old markup, so purge them once after an upgrade.
+    add_action('init', static function () {
+        if (get_option('awd_runtime_version') === AWD_VERSION) return;
+        update_option('awd_runtime_version', AWD_VERSION, true);
+        $any = false;
+        foreach (awd_performance_state() as $entry) if (!empty($entry['enabled'])) $any = true;
+        if ($any && function_exists('awd_cleanup_op_purge_page_cache')) awd_cleanup_op_purge_page_cache(array(), array());
+    }, 99);
     if (awd_performance_enabled('defer_scripts')) {
         add_action('wp_enqueue_scripts', static function () {
             if (is_admin() || is_customize_preview()) return;
@@ -280,6 +291,10 @@ if (function_exists('add_filter') && function_exists('get_option')) {
             $keep = array('jquery', 'jquery-core', 'jquery-migrate', 'wp-hooks', 'wp-i18n', 'wp-polyfill', 'regenerator-runtime');
             foreach ((array) $scripts->queue as $handle) {
                 if (in_array($handle, $keep, true) || !isset($scripts->registered[$handle]) || $scripts->get_data($handle, 'strategy')) continue;
+                // Only footer scripts. Plugins often echo inline code into the page header that calls their
+                // header script straight away (the Meta Pixel's FacebookSignal.init, for example); WordPress
+                // cannot see that code, so deferring a header script breaks it on every page.
+                if ((int) $scripts->get_data($handle, 'group') !== 1) continue;
                 // WordPress (6.3+) downgrades this to blocking when a dependent or inline script needs the original order.
                 $scripts->add_data($handle, 'strategy', 'defer');
             }

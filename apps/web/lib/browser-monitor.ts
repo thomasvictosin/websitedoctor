@@ -56,6 +56,10 @@ const MAX_LINK_PROBES = 200;
 const MAX_LINK_CANDIDATES = 1000;
 const MAX_SCAN_DURATION_MS = 600_000;
 const WEBRTC_DISABLED_MARKER = "WebRTC is disabled during website diagnostics.";
+// Console messages caused by the scan itself, not by the site: requests the scanner refuses to send
+// (form posts, analytics beacons) fail as "blocked by client", and embedded maps/videos are denied
+// cookie access in the headless browser. Visitors never see either.
+const SCANNER_CONSOLE_NOISE = /net::ERR_BLOCKED_BY_CLIENT|requestStorageAccess/;
 
 function loadAxeSource(): string {
   const directories: string[] = [];
@@ -297,7 +301,11 @@ const CHECK_PAGE = `() => {
   const missingAlt = [...document.images].filter((img) => !img.hasAttribute('alt')).slice(0,20).map(describe);
   const unlabeled = [...document.querySelectorAll('input:not([type=hidden]),select,textarea')].filter((el) => !el.labels?.length && !el.getAttribute('aria-label') && !el.getAttribute('aria-labelledby')).slice(0,20).map(describe);
   const hiddenNavs = [...document.querySelectorAll('nav,[role=navigation]')].filter((el) => !visible(el));
-  const hasMenuControl = [...document.querySelectorAll('button,[role=button],a')].some((el) => visible(el) && (/menu|navigation/i.test((el.innerText||'')+' '+(el.getAttribute('aria-label')||'')) || (el.getAttribute('aria-controls') && hiddenNavs.some((nav) => nav.id === el.getAttribute('aria-controls')))));
+  const namedMenuControl = [...document.querySelectorAll('button,[role=button],a')].some((el) => visible(el) && (/menu|navigation/i.test((el.innerText||'')+' '+(el.getAttribute('aria-label')||'')) || (el.getAttribute('aria-controls') && hiddenNavs.some((nav) => nav.id === el.getAttribute('aria-controls')))));
+  // Menu plugins and themes often draw the hamburger as a styled div or span (Superfly's sfm-navicon,
+  // Bootstrap's navbar-toggler): visitors can open the menu, so it is not missing.
+  const iconMenuControl = [...document.querySelectorAll('[class*=navicon],[class*=hamburger],[class*=burger],[class*=menu-toggle],[class*=nav-toggle],[class*=navbar-toggle],[class*=menu-trigger],[class*=menu-btn],[class*=menu-button],[class*=menu-icon],[class*=mobile-menu-open],[class*=offcanvas-toggle]')].some((el) => { const r = el.getBoundingClientRect(); return visible(el) && r.width <= 200 && r.height <= 200; });
+  const hasMenuControl = namedMenuControl || iconMenuControl;
   const navIssue = innerWidth <= 600 && hiddenNavs.length > 0 && !hasMenuControl ? hiddenNavs.slice(0,5).map(describe) : [];
   const root=document.documentElement;
   const documentWidth=Math.max(root.scrollWidth,document.body?.scrollWidth ?? 0);
@@ -366,7 +374,15 @@ async function inspectAtViewport(page: Page, context: BrowserContext, url: strin
   const consoleErrors: string[] = [];
   const failedRequests: Array<Record<string, unknown>> = [];
   const onPageError = (error: Error) => { if (!error.message.includes(WEBRTC_DISABLED_MARKER)) runtimeErrors.push(String(redactApiValue(error.message)).slice(0, 500)); };
-  const onConsole = (message: { type(): string; text(): string }) => { if (message.type() === "error" && !message.text().includes(WEBRTC_DISABLED_MARKER)) consoleErrors.push(String(redactApiValue(message.text())).slice(0, 500)); };
+  const onConsole = (message: { type(): string; text(): string; location?(): { url?: string } }) => {
+    if (message.type() !== "error") return;
+    const text = message.text();
+    if (text.includes(WEBRTC_DISABLED_MARKER) || SCANNER_CONSOLE_NOISE.test(text)) return;
+    // A resource the scanner itself refused (private address, budget) is not the site's error.
+    const source = typeof message.location === "function" ? message.location()?.url : undefined;
+    if (source && requestState.blockedUrls.has(source) && /^Failed to load resource/.test(text)) return;
+    consoleErrors.push(String(redactApiValue(text)).slice(0, 500));
+  };
   const onRequestFailed = (request: { url(): string; failure(): { errorText?: string } | null }) => {
     if (requestState.blockedUrls.has(request.url())) return;
     failedRequests.push({ url: safeEvidenceUrl(request.url()), error: String(redactApiValue(request.failure()?.errorText ?? "request failed")).slice(0, 300) });
