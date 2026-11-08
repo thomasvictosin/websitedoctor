@@ -49,13 +49,13 @@ const resultSchema = z.object({
   scannedUrl: z.string().max(2000),
   checkedAt: z.string().max(40),
   viewports: z.array(z.unknown()).max(10),
-  pages: z.array(z.unknown()).max(200),
+  pages: z.array(z.unknown()).max(2000),
   pageLimit: z.number().int().nonnegative(),
   pageLimitReached: z.boolean(),
   crawlIncomplete: z.boolean(),
   metrics: z.record(z.string(), z.unknown()),
-  errors: z.array(z.unknown()).max(200),
-  findings: z.array(finding).max(500),
+  errors: z.array(z.unknown()).max(5000),
+  findings: z.array(finding).max(2000),
 }).passthrough();
 const bodySchema = z.object({ siteId: z.string().min(1).max(64), result: resultSchema }).strict();
 
