@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AI Website Doctor
  * Description: Connects this WordPress site to a locally hosted AI Website Doctor for diagnostics and explicitly approved repairs.
- * Version: 0.8.1
+ * Version: 0.8.2
  * Requires at least: 6.2
  * Requires PHP: 8.0
  * License: GPL-2.0-or-later
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('AWD_VERSION', '0.8.1');
+define('AWD_VERSION', '0.8.2');
 define('AWD_OPTION', 'ai_website_doctor_settings');
 define('AWD_RECOVERY_OPTION', 'ai_website_doctor_recovery_points');
 define('AWD_SYNC_OPTION', 'ai_website_doctor_sync_state');
@@ -476,6 +476,7 @@ function awd_render_admin_page(): void
             </form>
 
             <?php awd_render_cleanup_section($settings); ?>
+            <?php awd_render_enable_all_card(); ?>
             <?php awd_render_hardening_section(); ?>
             <?php awd_render_performance_section(); ?>
             <?php awd_render_package_section(); ?>

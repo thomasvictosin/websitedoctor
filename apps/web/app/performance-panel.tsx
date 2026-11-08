@@ -84,6 +84,7 @@ export function PerformancePanel({ websiteId, onNotice }: { websiteId: string; o
   const locked = Boolean(busy) || runActive;
   const pluginReady = data.supported;
   const recommended = [...new Set((report?.opportunities ?? []).map((item) => item.fix).filter((fix): fix is string => Boolean(fix) && !measures.get(fix!)?.enabled))];
+  const allOff = data.measures.filter((measure) => !measure.enabled).map((measure) => measure.id);
   const titleOf = (id: string) => measures.get(id)?.title ?? id;
   const fixDialog = (ids: string[]) => ({
     title: ids.length === 1 ? `Turn on ${titleOf(ids[0])}?` : `Apply ${ids.length} speed fixes?`,
@@ -97,7 +98,7 @@ export function PerformancePanel({ websiteId, onNotice }: { websiteId: string; o
       <section className="tab-section">
         <div className="tab-section-head">
           <div>
-            <h3>Performance</h3>
+            <h3>Speed &amp; performance</h3>
             <p className="lead">Google PageSpeed Insights for mobile and desktop: the score, Core Web Vitals, what slows the site down, and fixes you can apply here.</p>
           </div>
           <div className="section-actions">
@@ -189,6 +190,11 @@ export function PerformancePanel({ websiteId, onNotice }: { websiteId: string; o
             <h3>Speed fixes on this site</h3>
             <p className="lead">{data.server ? `Server: ${data.server}. ` : ""}{data.cachePlugins.length ? `Cache plugin: ${data.cachePlugins.join(", ")}.` : "No cache plugin is active."} Each fix is reversible.</p>
           </div>
+          {pluginReady && allOff.length > 0 && (
+            <button className="button primary" disabled={locked} onClick={() => post("all-on", { action: "fix", changes: allOff.map((measure) => ({ measure, state: "on" })) }, fixDialog(allOff))}>
+              {busy === "all-on" ? "Approving…" : `Turn on all speed fixes (${allOff.length})`}
+            </button>
+          )}
         </div>
         {data.run && (
           <div className={`callout ${runActive ? "" : data.run.status === "verified" ? "callout-ok" : "callout-warn"}`}>

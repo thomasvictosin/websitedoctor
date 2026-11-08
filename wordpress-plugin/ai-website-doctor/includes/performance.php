@@ -243,7 +243,10 @@ function awd_performance_from_admin(): void
 function awd_render_performance_section(): void
 {
     $state = awd_performance_state();
-    echo '<div class="awd-card"><h2>Speed</h2><p>Switch on the fixes for common PageSpeed findings. Each one is checked after it is switched on and switched off again if the home page breaks. The app shows your PageSpeed scores and recommends which ones to use.</p><table class="widefat striped"><tbody>';
+    echo '<div class="awd-card"><h2>Speed</h2><p>Switch on the fixes for common PageSpeed findings. Each one is checked after it is switched on and switched off again if the home page breaks. The app shows your PageSpeed scores and recommends which ones to use.</p>';
+    $off = function_exists('awd_enable_all_counts') ? awd_enable_all_counts()['speed'] : 0;
+    if ($off > 0) awd_render_enable_all_button('speed', sprintf('Turn on all speed fixes (%d)', $off));
+    echo '<table class="widefat striped"><tbody>';
     foreach (awd_performance_measures() as $id => $measure) {
         $entry = (array) ($state[$id] ?? array());
         $on = !empty($entry['enabled']);

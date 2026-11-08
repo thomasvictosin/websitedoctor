@@ -1216,6 +1216,7 @@ export default function Home() {
                 <button role="menuitem" onClick={() => runSecurityCheck(site)} disabled={busy !== null}>{busy === `security:${site.id}` ? "Checking…" : "Security check"}</button>
                 <button role="menuitem" onClick={() => openWebsiteDetail(site.id, "cleanup")}>Clean up &amp; fixes</button>
                 <button role="menuitem" onClick={() => openWebsiteDetail(site.id, "protection")}>Protection</button>
+                <button role="menuitem" onClick={() => openWebsiteDetail(site.id, "performance")}>Speed &amp; performance</button>
                 <button role="menuitem" onClick={() => openWebsiteDetail(site.id, "settings")}>Settings &amp; connection</button>
                 <button role="menuitem" onClick={() => toggleHistory(site)}>{history[site.id] ? "Hide check history" : "Check history"}</button>
                 <button role="menuitem" className="danger-text" onClick={() => deleteWebsite(site)} disabled={busy !== null}>Remove website</button>
@@ -1520,7 +1521,7 @@ export default function Home() {
           </div>
           <div className="detail-tabs" role="tablist" aria-label="Website detail sections">
             {([
-              ["overview", "Overview"], ["software", "Plugins & themes"], ["performance", "Performance"], ["renewals", "Renewals"], ["cleanup", "Clean up & fixes"], ["protection", "Protection"],
+              ["overview", "Overview"], ["software", "Plugins & themes"], ["performance", "Speed & performance"], ["renewals", "Renewals"], ["cleanup", "Clean up & fixes"], ["protection", "Protection"],
               ["backups", "Backups"], ["diagnostics", "Diagnostics"], ["accessibility", "Accessibility"], ["responsive", "Responsive"], ["repair-history", "Repair history"], ["history", "Scan history"], ["settings", "Settings"],
             ] as const).map(([tab, label]) => (
               <button key={tab} role="tab" aria-selected={websiteDetailTab === tab} className={websiteDetailTab === tab ? "active" : ""}

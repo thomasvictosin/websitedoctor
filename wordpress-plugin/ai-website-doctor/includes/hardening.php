@@ -29,6 +29,7 @@ define('AWD_HARDENING_END', '# END AI Website Doctor hardening');
 define('AWD_CRAWLER_CACHE_PREFIX', 'awd_crawler_');
 
 add_action('admin_post_awd_hardening', 'awd_hardening_from_admin');
+add_action('admin_post_awd_enable_all', 'awd_enable_all_from_admin');
 
 function awd_hardening_measures(): array
 {
@@ -357,9 +358,94 @@ function awd_hardening_from_admin(): void
     awd_redirect($result['message'], $result['ok'] ? 'success' : 'warning');
 }
 
+/**
+ * Turns on every protection measure and/or speed fix that is still off, in one click.
+ * Each one is applied and tested exactly as its own button would; a measure that
+ * fails its test is switched back off and reported, the others stay on.
+ */
+function awd_enable_all(string $scope): array
+{
+    if (function_exists('set_time_limit')) @set_time_limit(180);
+    $on = array();
+    $failed = array();
+    if ($scope === 'all' || $scope === 'protection') {
+        $measures = awd_hardening_measures();
+        foreach ($measures as $id => $measure) {
+            if (awd_hardening_enabled($id)) continue;
+            $result = awd_hardening_apply($id, true);
+            if (!empty($result['ok'])) $on[] = $measure['title'];
+            else $failed[] = $measure['title'] . ' (' . (string) ($result['message'] ?? 'not applied') . ')';
+        }
+    }
+    if (($scope === 'all' || $scope === 'speed') && function_exists('awd_performance_measures')) {
+        foreach (awd_performance_measures() as $id => $measure) {
+            if (awd_performance_enabled($id)) continue;
+            // Page caching needs a cache plugin; the app installs one (Speed tab), so skip it here when none is active.
+            if ($id === 'page_cache' && function_exists('awd_performance_cache_plugins') && !awd_performance_cache_plugins()) {
+                $failed[] = $measure['title'] . ' (no cache plugin is active yet; use Apply recommended fixes in the app, which installs one)';
+                continue;
+            }
+            $result = awd_performance_apply($id, true);
+            if (!empty($result['ok'])) $on[] = $measure['title'];
+            else $failed[] = $measure['title'] . ' (' . (string) ($result['message'] ?? 'not applied') . ')';
+        }
+    }
+    if (!$on && !$failed) return array('ok' => true, 'message' => 'Everything is already on.');
+    $message = $on ? 'Turned on: ' . implode(', ', $on) . '.' : '';
+    if ($failed) $message .= ($message ? ' ' : '') . 'Not turned on: ' . implode('; ', $failed) . '.';
+    return array('ok' => !$failed, 'message' => $message);
+}
+
+function awd_enable_all_from_admin(): void
+{
+    if (!current_user_can('manage_options')) wp_die(esc_html__('You are not allowed to change protection settings.', 'ai-website-doctor'), 403);
+    check_admin_referer('awd_enable_all');
+    $scope = isset($_POST['scope']) ? sanitize_key(wp_unslash($_POST['scope'])) : '';
+    if (!in_array($scope, array('all', 'protection', 'speed'), true)) wp_die('Unknown scope.', 400);
+    $result = awd_enable_all($scope);
+    $GLOBALS['awd_force_integrity_scan'] = true;
+    awd_send_diagnostics();
+    awd_redirect($result['message'], $result['ok'] ? 'success' : 'warning');
+}
+
+/** Number of protection measures and speed fixes that are still off. */
+function awd_enable_all_counts(): array
+{
+    $protection = 0;
+    foreach (array_keys(awd_hardening_measures()) as $id) if (!awd_hardening_enabled($id)) $protection++;
+    $speed = 0;
+    if (function_exists('awd_performance_measures')) foreach (array_keys(awd_performance_measures()) as $id) if (!awd_performance_enabled($id)) $speed++;
+    return array('protection' => $protection, 'speed' => $speed);
+}
+
+function awd_render_enable_all_button(string $scope, string $label): void
+{
+    echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="margin:8px 0 12px"><input type="hidden" name="action" value="awd_enable_all"><input type="hidden" name="scope" value="' . esc_attr($scope) . '">';
+    wp_nonce_field('awd_enable_all');
+    submit_button($label, 'primary', 'submit', false);
+    echo '</form>';
+}
+
+function awd_render_enable_all_card(): void
+{
+    $counts = awd_enable_all_counts();
+    $total = $counts['protection'] + $counts['speed'];
+    echo '<div class="awd-card"><h2>Turn everything on</h2>';
+    if ($total === 0) {
+        echo '<p>All protection measures and speed fixes are on.</p></div>';
+        return;
+    }
+    echo '<p>' . esc_html(sprintf('%d protection measure(s) and %d speed fix(es) are off. One click turns them all on. Each is tested on this server exactly like its own button, and anything that breaks the home page is switched back off automatically.', $counts['protection'], $counts['speed'])) . '</p>';
+    awd_render_enable_all_button('all', sprintf('Turn on all protection and speed fixes (%d)', $total));
+    echo '</div>';
+}
+
 function awd_render_hardening_section(): void
 {
-    echo '<h2>Protection</h2><p>Each measure is reversible. Rules that change .htaccess are tested on this server after they are applied.</p><table class="widefat striped"><tbody>';
+    echo '<h2>Protection</h2><p>Each measure is reversible. Rules that change .htaccess are tested on this server after they are applied.</p>';
+    $off = awd_enable_all_counts()['protection'];
+    if ($off > 0) awd_render_enable_all_button('protection', sprintf('Turn on all protection (%d)', $off));
+    echo '<table class="widefat striped"><tbody>';
     $state = awd_hardening_state();
     foreach (awd_hardening_measures() as $id => $measure) {
         $entry = (array) ($state[$id] ?? array());
