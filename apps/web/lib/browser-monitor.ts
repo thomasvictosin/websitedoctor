@@ -59,7 +59,8 @@ const WEBRTC_DISABLED_MARKER = "WebRTC is disabled during website diagnostics.";
 // Console messages caused by the scan itself, not by the site: requests the scanner refuses to send
 // (form posts, analytics beacons) fail as "blocked by client", and embedded maps/videos are denied
 // cookie access in the headless browser. Visitors never see either.
-const SCANNER_CONSOLE_NOISE = /net::ERR_BLOCKED_BY_CLIENT|requestStorageAccess/;
+// Report-only policy notices ("no further action has been taken") block nothing either.
+const SCANNER_CONSOLE_NOISE = /net::ERR_BLOCKED_BY_CLIENT|requestStorageAccess|report-only Content Security Policy/;
 
 function loadAxeSource(): string {
   const directories: string[] = [];
@@ -395,6 +396,11 @@ async function inspectAtViewport(page: Page, context: BrowserContext, url: strin
     // A resource the scanner itself refused (private address, budget) is not the site's error.
     const source = typeof message.location === "function" ? message.location()?.url : undefined;
     if (source && requestState.blockedUrls.has(source) && /^Failed to load resource/.test(text)) return;
+    // A widget reporting that a request the scanner refused (a POST such as Google Maps' InitMapsJwt) failed.
+    for (const blocked of requestState.blockedUrls) {
+      const bare = blocked.split(/[?#]/)[0];
+      if (bare.length > 12 && text.includes(bare)) return;
+    }
     consoleErrors.push(String(redactApiValue(text)).slice(0, 500));
   };
   const onRequestFailed = (request: { url(): string; failure(): { errorText?: string } | null }) => {
