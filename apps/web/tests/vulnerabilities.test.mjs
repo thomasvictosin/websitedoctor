@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { matchVulnerabilities, parseFeed, versionInRange } from "../lib/vulnerabilities.ts";
+import { matchVulnerabilities, parseFeed, severityFor, versionInRange } from "../lib/vulnerabilities.ts";
 import { fixPlanForIssue } from "../lib/cleanup-plan.ts";
 
 const feed = {
@@ -27,8 +27,8 @@ test("the feed is reduced to installed software and matched by version range", (
   assert.equal(parsed.total, 4);
   assert.deepEqual(Object.keys(parsed.bySlug).sort(), ["plugin:elementor", "plugin:revslider", "plugin:wordpress-seo"]);
   const findings = matchVulnerabilities(parsed, diagnostics);
-  assert.deepEqual(findings.map((finding) => [finding.fingerprint, finding.severity]), [["vuln:plugin-elementor:a1b2", "high"], ["vuln:plugin-revslider:c3d4", "critical"]]);
-  assert.match(findings[0].description, /Fixed in version 4\.3\.6\. The available update \(4\.3\.6\) includes the fix/);
+  assert.deepEqual(findings.map((finding) => [finding.fingerprint, finding.severity]), [["vuln:plugin-elementor:known", "high"], ["vuln:plugin-revslider:known", "critical"]]);
+  assert.match(findings[0].description, /Version 4\.3\.6 or later fixes it\. The available update \(4\.3\.6\) includes the fix/);
   assert.match(findings[1].description, /No fixed version/);
 });
 
@@ -52,4 +52,45 @@ test("a vulnerability fix updates when the patched version is offered, otherwise
 test("an unrecognized feed yields no entries", () => {
   assert.equal(parseFeed({ unexpected: true }, new Set(["plugin:elementor"])).total, 0);
   assert.equal(parseFeed([], new Set()).total, 0);
+});
+
+const range = (to, inclusive = false) => ({ [`* - ${to}`]: { from_version: "*", from_inclusive: true, to_version: to, to_inclusive: inclusive } });
+const scannerFeed = {
+  d1: { id: "d1", title: "Duplicator <= 1.5.17 and Duplicator Pro <= 4.6.10 - Unauthenticated PHP Object Injection", cvss: null, software: [{ type: "plugin", slug: "duplicator-pro", affected_versions: range("4.6.10", true), patched_versions: ["4.6.11"] }] },
+  d2: { id: "d2", title: "Duplicator < 5.1.0 - Reflected Cross-Site Scripting", software: [{ type: "plugin", slug: "duplicator-pro", affected_versions: range("5.1.0"), patched_versions: ["5.1.0"] }] },
+  d3: { id: "d3", title: "Duplicator < 5.1.0 - Unauthenticated Full Path Disclosure", software: [{ type: "plugin", slug: "duplicator-pro", affected_versions: range("5.1.0"), patched_versions: ["5.1.0"] }] },
+  d4: { id: "d4", title: "Duplicator Pro < 5.1.0 - Authenticated (Subscriber+) SQL Injection", software: [{ type: "plugin", slug: "duplicator-pro", affected_versions: range("5.1.0"), patched_versions: ["5.1.0"] }] },
+  s1: { id: "s1", title: "Superfly Responsive Menu <= 5.0.25 - Authenticated (Subscriber+) Stored Cross-Site Scripting", software: [{ type: "plugin", slug: "superfly-menu", affected_versions: range("5.0.25", true), patched_versions: ["5.0.26"] }] },
+  s2: { id: "s2", title: "Superfly Responsive Menu <= 5.0.29 - Cross-Site Request Forgery to Arbitrary File Deletion", software: [{ type: "plugin", slug: "superfly-menu", affected_versions: range("5.0.29", true), patched_versions: [] }] },
+};
+const premium = { plugins: [
+  { name: "Duplicator Pro", version: "4.5.17.3", file: "duplicator-pro/duplicator-pro.php", source: "other" },
+  { name: "Superfly Menu", version: "5.0.24", file: "superfly-menu/main.php", source: "other" },
+] };
+
+test("each plugin gets one issue that lists all its vulnerabilities", () => {
+  const findings = matchVulnerabilities(parseFeed(scannerFeed, new Set(["plugin:duplicator-pro", "plugin:superfly-menu"])), premium);
+  assert.deepEqual(findings.map((finding) => finding.fingerprint), ["vuln:plugin-duplicator-pro:known", "vuln:plugin-superfly-menu:known"]);
+  const [duplicator, superfly] = findings;
+  assert.equal(duplicator.title, "Duplicator Pro 4.5.17.3 has 4 known vulnerabilities");
+  assert.equal(duplicator.severity, "high", "unauthenticated object injection is the worst of the four");
+  assert.equal(duplicator.evidence.count, 4);
+  assert.equal(duplicator.evidence.fixedIn, "5.1.0", "the version that fixes all of them");
+  assert.equal(duplicator.evidence.vulnerabilities[0].id, "d1", "worst first");
+  assert.match(duplicator.description, /Version 5\.1\.0 or later fixes all 4\. Get it from the vendor/);
+  assert.equal(superfly.evidence.fixedIn, null, "one of them has no fix yet");
+  assert.equal(superfly.evidence.partialFix, "5.0.26");
+  assert.equal(superfly.severity, "high");
+});
+
+test("without a CVSS score the severity is estimated from the vulnerability type", () => {
+  const estimate = (title) => severityFor({ title, cvss: null, rating: null }).severity;
+  assert.equal(estimate("X <= 1.0 - Unauthenticated Remote Code Execution"), "critical");
+  assert.equal(estimate("X <= 1.0 - Unauthenticated SQL Injection"), "high");
+  assert.equal(estimate("X <= 1.0 - Authenticated (Subscriber+) SQL Injection"), "medium");
+  assert.equal(estimate("X <= 1.0 - Authenticated (Contributor+) Privilege Escalation"), "high");
+  assert.equal(estimate("X <= 1.0 - Authenticated (Administrator+) Arbitrary File Upload"), "medium");
+  assert.equal(estimate("X <= 1.0 - Reflected Cross-Site Scripting"), "medium");
+  assert.equal(estimate("WordPress Core - All Known Versions - Cleartext Storage of wp_signups.activation_key"), "low");
+  assert.deepEqual(severityFor({ title: "Unauthenticated Remote Code Execution", cvss: 5.4, rating: "Medium" }), { severity: "medium", estimated: false }, "a real score wins");
 });

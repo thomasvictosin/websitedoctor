@@ -210,9 +210,9 @@ test("themes: updates, reinstalls, vulnerable themes and the cleanup plan", asyn
     t2: { id: "t2", title: "Twenty Twenty-Four <= 1.2 - XSS", cvss: { score: 6.1, rating: "Medium" }, software: [{ type: "theme", slug: "twentytwentyfour", affected_versions: { "* - 1.2": { from_version: "*", to_version: "1.2" } }, patched_versions: ["1.3"] }] },
   };
   const findings = matchVulnerabilities(parseFeed(feed, new Set(["theme:bauen", "theme:twentytwentyfour"])), data);
-  assert.deepEqual(findings.map((finding) => finding.fingerprint).sort(), ["vuln:theme-bauen:t1", "vuln:theme-twentytwentyfour:t2"]);
-  const parentFix = fixPlanForIssue("vuln:theme-bauen:t1", { ...data, __issueEvidence: findings.find((finding) => finding.fingerprint === "vuln:theme-bauen:t1").evidence });
+  assert.deepEqual(findings.map((finding) => finding.fingerprint).sort(), ["vuln:theme-bauen:known", "vuln:theme-twentytwentyfour:known"]);
+  const parentFix = fixPlanForIssue("vuln:theme-bauen:known", { ...data, __issueEvidence: findings.find((finding) => finding.fingerprint === "vuln:theme-bauen:known").evidence });
   assert.equal(parentFix.steps.length, 0, "the active theme's parent is never removed automatically");
-  const updateFix = fixPlanForIssue("vuln:theme-twentytwentyfour:t2", { ...data, __issueEvidence: findings.find((finding) => finding.fingerprint === "vuln:theme-twentytwentyfour:t2").evidence });
+  const updateFix = fixPlanForIssue("vuln:theme-twentytwentyfour:known", { ...data, __issueEvidence: findings.find((finding) => finding.fingerprint === "vuln:theme-twentytwentyfour:known").evidence });
   assert.equal(updateFix.steps[0].operation, "update_theme");
 });

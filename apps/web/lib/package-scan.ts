@@ -128,8 +128,9 @@ export function scanPackage(zip: Buffer, expected: { kind: "plugin" | "theme"; t
   if (index && result.version) {
     const fake = expected.kind === "plugin" ? { plugins: [{ file: expected.target, name: result.name ?? slug, version: result.version }] } : { themes: [{ stylesheet: slug, name: result.name ?? slug, version: result.version }] };
     for (const finding of matchVulnerabilities(index, fake)) {
-      const fixedIn = typeof finding.evidence.fixedIn === "string" ? finding.evidence.fixedIn : null;
-      result.vulnerabilities.push({ title: String((finding.evidence.vulnerability as { title?: string }).title ?? finding.title), fixedIn });
+      for (const vulnerability of (finding.evidence.vulnerabilities as Array<{ title?: string; fixedIn?: string | null }> | undefined) ?? []) {
+        result.vulnerabilities.push({ title: String(vulnerability.title ?? finding.title), fixedIn: typeof vulnerability.fixedIn === "string" ? vulnerability.fixedIn : null });
+      }
     }
     if (result.vulnerabilities.length) result.blockers.push(`Version ${result.version} still has ${result.vulnerabilities.length} known vulnerabilit${result.vulnerabilities.length === 1 ? "y" : "ies"}: ${result.vulnerabilities.slice(0, 2).map((item) => item.title).join("; ")}.`);
   } else if (!index) {

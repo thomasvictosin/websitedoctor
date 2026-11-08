@@ -19,7 +19,7 @@ type Json = Record<string, unknown>;
 const record = (value: unknown): Json => value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
 
 export type VersionRange = { from: string; fromInclusive: boolean; to: string; toInclusive: boolean };
-export type IndexedVulnerability = { id: string; title: string; type: "plugin" | "theme" | "core"; slug: string; ranges: VersionRange[]; patchedVersions: string[]; cvss: number | null; rating: string | null; cve: string | null; reference: string | null };
+export type IndexedVulnerability = { id: string; title: string; type: "plugin" | "theme" | "core"; slug: string; ranges: VersionRange[]; patchedVersions: string[]; cvss: number | null; rating: string | null; cve: string | null; reference: string | null; informational?: boolean };
 export type VulnerabilityIndex = { fetchedAt: string; source: "wordfence"; entries: number; bySlug: Record<string, IndexedVulnerability[]> };
 
 /** Reduce the feed to vulnerabilities for the given software keys ("plugin:<slug>", "core:wordpress"). */
@@ -49,6 +49,7 @@ export function parseFeed(feed: unknown, wanted: Set<string>): { bySlug: Record<
         rating: typeof cvss.rating === "string" ? cvss.rating : null,
         cve: (cve as string | null) ?? null,
         reference: references[0] ?? null,
+        informational: entry.informational === true,
       });
     }
   }
@@ -61,12 +62,34 @@ export function versionInRange(version: string, range: VersionRange) {
   return lower && upper;
 }
 
-function severityFor(vulnerability: IndexedVulnerability): "critical" | "high" | "medium" | "low" {
+type Severity = "critical" | "high" | "medium" | "low";
+const SEVERITY_RANK: Record<Severity, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+
+/**
+ * The scanner feed carries no CVSS score, so the severity is estimated from
+ * the standardized Wordfence title: who can exploit it and what it allows.
+ * A real CVSS score or rating, when present, always wins.
+ */
+export function severityFor(vulnerability: Pick<IndexedVulnerability, "title" | "cvss" | "rating" | "informational">): { severity: Severity; estimated: boolean } {
   const rating = (vulnerability.rating ?? "").toLowerCase();
-  if (rating === "critical" || (vulnerability.cvss ?? 0) >= 9) return "critical";
-  if (rating === "high" || (vulnerability.cvss ?? 0) >= 7) return "high";
-  if (rating === "medium" || (vulnerability.cvss ?? 0) >= 4) return "medium";
-  return "low";
+  const score = vulnerability.cvss ?? 0;
+  if (rating === "critical" || score >= 9) return { severity: "critical", estimated: false };
+  if (rating === "high" || score >= 7) return { severity: "high", estimated: false };
+  if (rating === "medium" || score >= 4) return { severity: "medium", estimated: false };
+  if (rating === "low" || rating === "none" || score > 0) return { severity: "low", estimated: false };
+  if (vulnerability.informational) return { severity: "low", estimated: true };
+  const title = vulnerability.title.toLowerCase();
+  // Who can exploit it: anyone on the internet, a visitor tricking a logged-in admin (CSRF), any logged-in user, or only privileged users.
+  const csrf = /cross-site request forgery|csrf/.test(title);
+  const level = /administrator\+|admin\+|super admin|editor\+|shop manager\+/.test(title) ? "privileged" : /unauthenticated/.test(title) ? "anyone" : csrf ? "tricked" : "user";
+  const takeover = /remote code execution|code execution|code injection|arbitrary file upload|privilege escalation|authentication bypass|account takeover|arbitrary options? update|arbitrary user (creation|password)|command injection/.test(title);
+  const serious = /sql injection|object injection|arbitrary file (deletion|read|download)|local file inclusion|remote file inclusion|path traversal|directory traversal|server-side request forgery|ssrf/.test(title);
+  const moderate = csrf || /cross-site scripting|xss|open redirect|missing authori[sz]ation|insecure direct object|information (exposure|disclosure)|sensitive information|full path disclosure|content injection|html injection|denial of service/.test(title);
+  if (level === "privileged") return { severity: takeover || serious ? "medium" : "low", estimated: true };
+  if (takeover) return { severity: level === "anyone" ? "critical" : "high", estimated: true };
+  if (serious) return { severity: level === "user" ? "medium" : "high", estimated: true };
+  if (moderate) return { severity: "medium", estimated: true };
+  return { severity: "low", estimated: true };
 }
 
 export type VulnerabilityFinding = { fingerprint: string; title: string; description: string; severity: "critical" | "high" | "medium" | "low"; evidence: Json };
@@ -87,20 +110,43 @@ export function matchVulnerabilities(index: Pick<VulnerabilityIndex, "bySlug">, 
   if (wpVersion) installed.push({ key: "core:wordpress", name: "WordPress", version: wpVersion, file: null, newVersion: null, source: "wordpress.org" });
   for (const item of installed) {
     if (!item.version) continue;
-    for (const vulnerability of index.bySlug[item.key] ?? []) {
-      if (!vulnerability.ranges.some((range) => versionInRange(item.version, range))) continue;
-      const fixedIn = vulnerability.patchedVersions.filter((version) => compareVersions(version, item.version) > 0).sort(compareVersions)[0] ?? null;
-      const updateFixes = Boolean(fixedIn && item.newVersion && compareVersions(item.newVersion, fixedIn) >= 0);
-      findings.push({
-        fingerprint: `vuln:${item.key.replace(":", "-")}:${vulnerability.id}`.slice(0, 160),
-        title: `Known vulnerability in ${item.name} ${item.version}: ${vulnerability.title}`.slice(0, 200),
-        description: `${vulnerability.title}${vulnerability.cve ? ` (${vulnerability.cve})` : ""}${vulnerability.cvss ? `, CVSS ${vulnerability.cvss}` : ""}. ${fixedIn
-          ? `Fixed in version ${fixedIn}.${updateFixes ? ` The available update (${item.newVersion}) includes the fix.` : item.source === "wordpress.org" ? " Sync diagnostics so WordPress offers that update." : " Update it from the vendor."}`
-          : "No fixed version is published yet: deactivate and remove it until the vendor releases a fix."}`.slice(0, 2000),
-        severity: severityFor(vulnerability),
-        evidence: { vulnerability: { ...vulnerability }, installed: { name: item.name, version: item.version, file: item.file, availableUpdate: item.newVersion, source: item.source }, fixedIn, updateFixes },
-      });
-    }
+    // One issue per installed plugin/theme/core version, listing every known vulnerability it has.
+    const matched = (index.bySlug[item.key] ?? [])
+      .filter((vulnerability) => vulnerability.ranges.some((range) => versionInRange(item.version, range)))
+      .filter((vulnerability, position, all) => all.findIndex((other) => other.id === vulnerability.id) === position)
+      .map((vulnerability) => {
+        const fixedIn = vulnerability.patchedVersions.filter((version) => compareVersions(version, item.version) > 0).sort(compareVersions)[0] ?? null;
+        return { ...vulnerability, fixedIn, ...severityFor(vulnerability) };
+      })
+      .sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || a.title.localeCompare(b.title));
+    if (!matched.length) continue;
+    const worst = matched[0];
+    const unfixed = matched.filter((vulnerability) => !vulnerability.fixedIn);
+    // The version that fixes all of them (null when at least one has no fix yet).
+    const fixedIn = unfixed.length ? null : matched.map((vulnerability) => vulnerability.fixedIn as string).sort(compareVersions).at(-1) ?? null;
+    const partialFix = unfixed.length && unfixed.length < matched.length ? matched.filter((vulnerability) => vulnerability.fixedIn).map((vulnerability) => vulnerability.fixedIn as string).sort(compareVersions).at(-1) ?? null : null;
+    const updateFixes = Boolean(fixedIn && item.newVersion && compareVersions(item.newVersion, fixedIn) >= 0);
+    const count = matched.length;
+    const lines = matched.slice(0, 15).map((vulnerability) => `• ${vulnerability.title}${vulnerability.cve ? ` (${vulnerability.cve})` : ""} — ${vulnerability.severity}${vulnerability.estimated ? " (estimated)" : vulnerability.cvss ? `, CVSS ${vulnerability.cvss}` : ""}; ${vulnerability.fixedIn ? `fixed in ${vulnerability.fixedIn}` : "no fix released yet"}.`);
+    const advice = fixedIn
+      ? `Version ${fixedIn} or later fixes ${count === 1 ? "it" : `all ${count}`}.${updateFixes ? ` The available update (${item.newVersion}) includes the fix.` : item.source === "wordpress.org" ? " Sync diagnostics so WordPress offers that update." : " Get it from the vendor and upload it here."}`
+      : partialFix
+        ? `Version ${partialFix} fixes ${count - unfixed.length} of them; ${unfixed.length} ha${unfixed.length === 1 ? "s" : "ve"} no fix yet, so consider removing it until the vendor releases one.`
+        : `No fixed version is published yet: deactivate and remove it until the vendor releases a fix.`;
+    findings.push({
+      fingerprint: `vuln:${item.key.replace(":", "-")}:known`.slice(0, 160),
+      title: (count === 1 ? `Known vulnerability in ${item.name} ${item.version}: ${worst.title}` : `${item.name} ${item.version} has ${count} known vulnerabilities`).slice(0, 200),
+      description: `${advice}\n${lines.join("\n")}${count > lines.length ? `\n…and ${count - lines.length} more.` : ""}`.slice(0, 2000),
+      severity: worst.severity,
+      evidence: {
+        vulnerability: { ...worst },
+        vulnerabilities: matched.map((vulnerability) => ({ ...vulnerability })),
+        count,
+        severityEstimated: worst.estimated,
+        installed: { name: item.name, version: item.version, file: item.file, availableUpdate: item.newVersion, source: item.source },
+        fixedIn, partialFix, unfixedCount: unfixed.length, updateFixes,
+      },
+    });
   }
   return findings;
 }
@@ -238,6 +284,10 @@ export async function storeVulnerabilityFindings(websiteId: string, diagnostics:
     });
   }
   const active = findings.map((finding) => finding.fingerprint);
+  // Before grouping, each vulnerability record was its own issue; the grouped issue replaces them.
+  if (current) {
+    await db.issue.deleteMany({ where: { websiteId, source: "vulnerability_feed", NOT: [{ fingerprint: { endsWith: ":known" } }, { fingerprint: { endsWith: ":wporg-closed" } }] } });
+  }
   // Without the Wordfence index, only closed-plugin findings can be judged; keep feed findings as they are.
   await db.issue.updateMany({
     where: { websiteId, source: "vulnerability_feed", status: { in: ["open", "acknowledged"] }, fingerprint: { ...(current ? {} : { endsWith: ":wporg-closed" }), ...(active.length ? { notIn: active } : {}) } },
