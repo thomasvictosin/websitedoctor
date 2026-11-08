@@ -70,6 +70,20 @@ export async function POST(
   } : null;
   for (const issue of parsed.data.issues) {
     const fingerprint = `wp:${issue.fingerprint}`;
+    // The plugin keeps its last fatal errors in a list and reports them on every sync. A fatal that was
+    // resolved stays resolved unless it happened again after it was resolved.
+    if (issue.fingerprint.startsWith("php-fatal:")) {
+      const fatalId = issue.fingerprint.slice("php-fatal:".length);
+      const lastObserved = Math.max(0, ...(parsed.data.fatalErrors ?? [])
+        .filter((fatal) => fatal.id.slice(0, 32) === fatalId)
+        .map((fatal) => Date.parse(fatal.observedAt))
+        .filter(Number.isFinite));
+      const existing = await db.issue.findUnique({
+        where: { websiteId_fingerprint: { websiteId: auth.agent.websiteId, fingerprint } },
+        select: { status: true, resolvedAt: true },
+      });
+      if (existing?.status === "resolved" && existing.resolvedAt && lastObserved > 0 && lastObserved <= existing.resolvedAt.getTime()) continue;
+    }
     const evidence = {
       collectedAt: parsed.data.collectedAt,
       finding: issue,

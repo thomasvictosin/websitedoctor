@@ -1122,6 +1122,9 @@ function awd_collect_diagnostics(array $settings): array
     }
     foreach ($fatal_events as $fatal) {
         if (!is_array($fatal)) continue;
+        // Older fatals stay in the diagnostics list, but only the last day's are reported as open problems.
+        $observed = strtotime((string) ($fatal['observedAt'] ?? ''));
+        if ($observed !== false && $observed < time() - 86400) continue;
         $issues[] = array(
             'fingerprint' => 'php-fatal:' . substr((string) ($fatal['id'] ?? hash('sha256', wp_json_encode($fatal))), 0, 32),
             'title' => 'PHP fatal error detected',
