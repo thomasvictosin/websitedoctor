@@ -148,6 +148,19 @@ function quarantinable(path: string, officialChecksums: Record<string, string> |
 }
 
 export const SALT_ROTATION_COOLDOWN_MS = 24 * 60 * 60_000;
+/** A step applied this recently whose finding is back is not preselected again. */
+export const REPEAT_WINDOW_MS = 24 * 60 * 60_000;
+
+/** What a step changes, so a later plan can tell it already ran. */
+export function repeatKey(step: CleanupStep): string | null {
+  const p = step.parameters as Record<string, string>;
+  switch (step.operation) {
+    case "reinstall_plugin": return `plugin:${p.plugin}@${p.expectedVersion}`;
+    case "reinstall_theme": return `theme:${p.stylesheet}@${p.expectedVersion}`;
+    case "quarantine_file": return `file:${p.path}`;
+    default: return null;
+  }
+}
 
 export function buildCleanupPlan(input: {
   diagnostics: unknown;
@@ -156,6 +169,8 @@ export function buildCleanupPlan(input: {
   now?: Date;
   /** When a previous cleanup on this site last replaced the salts. */
   saltsRotatedAt?: Date | null;
+  /** Steps that cleanups on this site applied within REPEAT_WINDOW_MS. */
+  recentlyApplied?: Array<{ at: Date; step: CleanupStep }>;
 }): CleanupPlan {
   const now = input.now ?? new Date();
   const diagnostics = record(input.diagnostics);
@@ -292,10 +307,40 @@ export function buildCleanupPlan(input: {
     });
   }
 
+  // A step that already ran and whose finding came straight back would only loop: the same
+  // reinstall or quarantine, the file recreated, the same plan again. Offer it unticked instead.
+  // Files that match malware patterns are always removed again.
+  const applied = new Map<string, Date>();
+  for (const entry of input.recentlyApplied ?? []) {
+    const key = repeatKey(entry.step);
+    if (!key || now.getTime() - entry.at.getTime() >= REPEAT_WINDOW_MS) continue;
+    if (!applied.has(key) || applied.get(key)! < entry.at) applied.set(key, entry.at);
+  }
+  const repeated: CleanupOptionalItem[] = [];
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    const step = steps[index];
+    const key = repeatKey(step);
+    const at = key ? applied.get(key) : undefined;
+    if (!key || !at) continue;
+    if (step.operation === "quarantine_file" && /malware patterns/.test(quarantine.get(String(step.parameters.path)) ?? "")) continue;
+    steps.splice(index, 1);
+    const when = at.toISOString().slice(0, 16).replace("T", " ");
+    const what = step.operation === "quarantine_file" ? `${String(step.parameters.path)} was quarantined` : `${String(step.parameters.plugin ?? step.parameters.stylesheet).split("/")[0]} was reinstalled`;
+    repeated.unshift({
+      id: `repeat:${key}`.slice(0, 120),
+      description: `${step.description} Not ticked: ${what} at ${when} UTC and the same finding came straight back, so doing it again will not make it stick. Plugins often recreate their own guard or cache files; AI Website Doctor 0.8.1 reads such files and ignores harmless ones, so update it on the site. Tick this only to run it again anyway.`,
+      step,
+    });
+  }
+  if (repeated.length) {
+    manual.push(`${repeated.length} change(s) from a cleanup in the last 24 hours came straight back, so they are not ticked this time. If this site still runs AI Website Doctor older than 0.8.1, update it: 0.8.1 recognises harmless files that plugins recreate (such as All-in-One WP Migration's storage/index.php and MetForm's icon cache).`);
+  }
+  optional.push(...repeated);
+
   const compromised = steps.length > 0 || securityIssues.some((issue) => issue.severity === "critical" || issue.severity === "high");
   // A follow-up cleanup within a day does not sign everyone out again: the earlier rotation already invalidated stolen cookies.
   const recentRotation = input.saltsRotatedAt && now.getTime() - input.saltsRotatedAt.getTime() < SALT_ROTATION_COOLDOWN_MS ? input.saltsRotatedAt : null;
-  if (compromised && steps.length + optional.length > 0) {
+  if (compromised && steps.length + optional.length - repeated.length > 0) {
     if (recentRotation) manual.push(`The secret keys and salts were already replaced at ${recentRotation.toISOString().slice(0, 16).replace("T", " ")} UTC, so this run does not sign everyone out again.`);
     else steps.push({ description: "Replace the eight WordPress secret keys and salts in wp-config.php, so stolen login cookies stop working. Everyone, including you, will need to sign in again.", operation: "rotate_salts", parameters: {} });
   }
@@ -321,14 +366,23 @@ export function buildCleanupPlan(input: {
   }
 
   const actionable = steps.filter((step) => step.operation !== "purge_page_cache").length;
+  const count = (operation: CleanupStep["operation"]) => steps.filter((step) => step.operation === operation).length;
+  const parts = [
+    [count("quarantine_file") + count("quarantine_theme_file"), "file(s) quarantined"],
+    [count("restore_core_file"), "core file(s) restored"],
+    [count("reinstall_plugin"), "plugin(s) reinstalled from WordPress.org"],
+    [count("reinstall_theme"), "theme(s) reinstalled from WordPress.org"],
+    [count("update_plugin") + count("update_theme"), "update(s) installed"],
+    [count("quarantine_plugin") + count("quarantine_theme"), "plugin(s) or theme(s) removed"],
+    [count("demote_user"), "administrator(s) demoted"],
+    [count("remove_htaccess_rules") ? 1 : 0, ".htaccess cleaned"],
+    [count("rotate_salts") ? 1 : 0, "salts rotated"],
+  ].filter(([n]) => Number(n) > 0).map(([n, label]) => label === ".htaccess cleaned" || label === "salts rotated" ? String(label) : `${n} ${label}`);
   const summary = !compromised
     ? "No compromise evidence was found; nothing needs cleaning."
-    : `${actionable} change(s) will be made after one approval: ${[
-      quarantine.size ? `${quarantine.size} file(s) quarantined` : "",
-      steps.filter((step) => step.operation === "restore_core_file").length ? `${steps.filter((step) => step.operation === "restore_core_file").length} core file(s) restored` : "",
-      steps.some((step) => step.operation === "remove_htaccess_rules") ? ".htaccess cleaned" : "",
-      steps.some((step) => step.operation === "rotate_salts") ? "salts rotated" : "",
-    ].filter(Boolean).join(", ")}, then the page cache is purged and the site is re-checked from outside.`;
+    : actionable === 0
+      ? "Nothing new to change automatically. Read the notes below before running anything again."
+      : `${actionable} change(s) will be made after one approval (${parts.join(", ")}), then the page cache is purged and the site is re-checked from outside.`;
 
   return {
     generatedAt: now.toISOString(),

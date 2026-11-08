@@ -225,3 +225,39 @@ test("themes: updates, reinstalls, vulnerable themes and the cleanup plan", asyn
   const updateFix = fixPlanForIssue("vuln:theme-twentytwentyfour:known", { ...data, __issueEvidence: findings.find((finding) => finding.fingerprint === "vuln:theme-twentytwentyfour:known").evidence });
   assert.equal(updateFix.steps[0].operation, "update_theme");
 });
+
+test("a step that already ran and came straight back is offered unticked, not repeated", () => {
+  const aiwm = "all-in-one-wp-migration/all-in-one-wp-migration.php";
+  const metform = "wp-content/uploads/metform/cache/icons/font-awesome-1090e9a32a34c98e.php";
+  const site = diagnostics({ integrity: {
+    core: { version: "7.1.4", locale: "en_US", checksumsAvailable: true, checkedFiles: 3, modified: [], missing: [], unknownPhp: [] },
+    rootUnknownFiles: [], uploadsPhp: [metform], suspiciousFiles: [], robotsFile: { present: false },
+    htaccess: { present: true, bytes: 300, sha256: h("d"), hasWordPressBlock: true, suspiciousLines: [] },
+    admins: { count: 2, recent: [] }, fileHashes: { [metform]: h("9") },
+    pluginIntegrity: [{ plugin: aiwm, version: "7.113", status: "modified", modified: [], addedPhp: ["storage/index.php"] }],
+  }, root: { plugins: [{ name: "All-in-One WP Migration", version: "7.113", file: aiwm, active: true }] } });
+  const open = [{ fingerprint: "wp:integrity:plugin-modified:all-in-one-wp-migration", severity: "high", title: "Plugin code differs" }];
+  const first = buildCleanupPlan({ diagnostics: site, openIssues: open, officialChecksums: official, now: NOW });
+  const reinstall = first.steps.find((step) => step.operation === "reinstall_plugin");
+  const quarantine = first.steps.find((step) => step.operation === "quarantine_file");
+  assert.ok(reinstall && quarantine);
+  assert.match(first.summary, /^3 change\(s\) will be made after one approval \(1 file\(s\) quarantined, 1 plugin\(s\) reinstalled from WordPress.org, salts rotated\)/);
+
+  const ranAt = new Date(NOW.getTime() - 2 * 60 * 60_000);
+  const again = buildCleanupPlan({ diagnostics: site, openIssues: open, officialChecksums: official, now: NOW, saltsRotatedAt: ranAt, recentlyApplied: [{ at: ranAt, step: reinstall }, { at: ranAt, step: quarantine }] });
+  assert.deepEqual(again.steps, [], "no reinstall, quarantine, salt rotation or cache purge loop");
+  assert.deepEqual(again.optional.map((item) => item.id), [`repeat:file:${metform}`, `repeat:plugin:${aiwm}@7.113`]);
+  assert.match(again.summary, /Nothing new to change automatically/);
+  assert.ok(again.manual.some((item) => /0\.8\.1/.test(item)));
+  assert.deepEqual(selectCleanupSteps(again, [`repeat:plugin:${aiwm}@7.113`]).map((step) => step.operation), ["reinstall_plugin", "purge_page_cache"], "the owner can still tick it");
+
+  const dayLater = buildCleanupPlan({ diagnostics: site, openIssues: open, officialChecksums: official, now: NOW, recentlyApplied: [{ at: new Date(NOW.getTime() - 25 * 60 * 60_000), step: reinstall }] });
+  assert.ok(dayLater.steps.some((step) => step.operation === "reinstall_plugin"), "after 24 hours the step is preselected again");
+});
+
+test("files matching malware patterns are quarantined again even when they came back", () => {
+  const ranAt = new Date(NOW.getTime() - 60 * 60_000);
+  const step = { description: "Quarantine", operation: "quarantine_file", parameters: { path: "wp-content/uploads/2026/11/thumb.php", expectedSha256: h("4") } };
+  const plan = buildCleanupPlan({ diagnostics: diagnostics(), openIssues: issues, officialChecksums: official, now: NOW, recentlyApplied: [{ at: ranAt, step }] });
+  assert.ok(plan.steps.some((item) => item.operation === "quarantine_file" && item.parameters.path === "wp-content/uploads/2026/11/thumb.php"));
+});

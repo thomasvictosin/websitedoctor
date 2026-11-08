@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { db } from "./db.ts";
-import { SALT_ROTATION_COOLDOWN_MS, allUpdateSteps, buildCleanupPlan, cleanupStepSchema, cleanupStepsDigest, compareVersions, fetchOfficialChecksums, fixPlanForIssue, pluginUpdateSteps, selectCleanupSteps, type CleanupPlan, type CleanupStep } from "./cleanup-plan.ts";
+import { REPEAT_WINDOW_MS, SALT_ROTATION_COOLDOWN_MS, allUpdateSteps, repeatKey, buildCleanupPlan, cleanupStepSchema, cleanupStepsDigest, compareVersions, fetchOfficialChecksums, fixPlanForIssue, pluginUpdateSteps, selectCleanupSteps, type CleanupPlan, type CleanupStep } from "./cleanup-plan.ts";
 import { checkWebsite } from "./monitor.ts";
 import { runAndStoreSecurityCheck } from "./monitoring-service.ts";
 import { notifySite } from "./protection.ts";
@@ -36,18 +36,42 @@ export class CleanupError extends Error {
   }
 }
 
+/** Steps that cleanups and one-click fixes on this site applied within the repeat window. */
+async function recentlyAppliedSteps(websiteId: string, now: Date) {
+  const runs = await db.repairProposal.findMany({
+    where: { websiteId, createdAt: { gte: new Date(now.getTime() - REPEAT_WINDOW_MS) }, executionStatus: { in: ["completed", "partial"] }, proposal: { path: ["kind"], equals: CLEANUP_KIND } },
+    orderBy: { createdAt: "desc" },
+    take: 30,
+    select: { createdAt: true, proposal: true },
+  });
+  const applied: Array<{ at: Date; step: CleanupStep }> = [];
+  for (const run of runs) {
+    const cleanup = record(record(run.proposal).cleanup);
+    const steps = Array.isArray(cleanup.steps) ? cleanup.steps : [];
+    const execution = record(cleanup.execution);
+    const at = typeof execution.completedAt === "string" && !Number.isNaN(Date.parse(execution.completedAt)) ? new Date(execution.completedAt) : run.createdAt;
+    for (const reported of Array.isArray(execution.steps) ? execution.steps.map(record) : []) {
+      if (reported.status !== "applied" || typeof reported.index !== "number") continue;
+      const parsed = cleanupStepSchema.safeParse(steps[reported.index]);
+      if (parsed.success) applied.push({ at, step: parsed.data });
+    }
+  }
+  return applied;
+}
+
 export async function loadCleanupPlan(websiteId: string, now = new Date()) {
-  const [agent, issues, lastRotation] = await Promise.all([
+  const [agent, issues, lastRotation, recentlyApplied] = await Promise.all([
     db.wordPressAgent.findFirst({ where: { websiteId, revokedAt: null }, select: { id: true, diagnostics: true, lastSeenAt: true } }),
     db.issue.findMany({ where: { websiteId, status: { in: ["open", "acknowledged"] } }, select: { id: true, fingerprint: true, severity: true, title: true } }),
     db.repairProposal.findFirst({ where: { websiteId, operationIds: { has: "rotate_salts" }, executionStatus: "completed", createdAt: { gte: new Date(now.getTime() - SALT_ROTATION_COOLDOWN_MS) } }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
+    recentlyAppliedSteps(websiteId, now),
   ]);
   const diagnostics = record(agent?.diagnostics);
   const core = record(record(diagnostics.integrity).core);
   const checksums = typeof core.version === "string" && core.version
     ? await fetchOfficialChecksums(core.version, typeof core.locale === "string" ? core.locale : "en_US")
     : null;
-  const plan = buildCleanupPlan({ diagnostics: agent?.diagnostics ?? null, openIssues: issues, officialChecksums: checksums, now, saltsRotatedAt: lastRotation?.createdAt ?? null });
+  const plan = buildCleanupPlan({ diagnostics: agent?.diagnostics ?? null, openIssues: issues, officialChecksums: checksums, now, saltsRotatedAt: lastRotation?.createdAt ?? null, recentlyApplied });
   if (!agent) plan.blockers.unshift("No WordPress plugin is connected to this website.");
   else if (agent.lastSeenAt.getTime() < now.getTime() - 15 * 60_000) plan.blockers.push("The WordPress plugin has not checked in for 15 minutes; it must be online to run the cleanup.");
   return { plan, agent, issues };
@@ -447,6 +471,14 @@ export async function startIssueFix(input: { issueId: string; websiteId: string;
   const fix = input.mode === "remove" ? removalPlanForIssue(issue.fingerprint, agent!.diagnostics) : fixPlanForIssue(issue.fingerprint, { ...record(agent!.diagnostics), __issueEvidence: issue.evidence });
   if (!fix) throw new CleanupError("This finding has no one-click fix; follow its recommendation instead.", 400);
   if (!fix.steps.length) throw new CleanupError(fix.skipped.join(" ") || "There is nothing to fix.", 409);
+  if (input.mode !== "remove") {
+    const now = new Date();
+    const done = new Map((await recentlyAppliedSteps(input.websiteId, now)).map((entry) => [repeatKey(entry.step), entry.at]));
+    const repeat = fix.steps.map((step) => ({ step, at: done.get(repeatKey(step)) })).find((item) => repeatKey(item.step) && item.at);
+    if (repeat?.at) {
+      throw new CleanupError(`This exact fix already ran at ${repeat.at.toISOString().slice(0, 16).replace("T", " ")} UTC and the finding came straight back, so running it again will not make it stick. The plugin usually recreates the file itself (a harmless guard or cache file). Update AI Website Doctor on the site to 0.8.1, which reads such files and ignores harmless ones; the finding then clears on the next scan.`, 409);
+    }
+  }
   return startCleanup({ websiteId: input.websiteId, organizationId: input.organizationId, planDigest: "fix", include: [], actor: input.actor, explicit: { steps: fix.steps, title: fix.title, issueId: issue.id, mode: "maintenance" } });
 }
 
