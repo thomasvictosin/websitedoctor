@@ -24,7 +24,7 @@ const OPEN_PAGE = 30;
 export const isOpenIssue = (issue: { status: string }) => issue.status !== "resolved";
 const bySeverityThenRecent = (a: BoardIssue, b: BoardIssue) =>
   (SEVERITY_RANK[b.severity] ?? 0) - (SEVERITY_RANK[a.severity] ?? 0) || Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt);
-const isPluginUpdate = (issue: BoardIssue) => issue.fingerprint.startsWith("wp:plugin-update:");
+const isPluginUpdate = (issue: BoardIssue) => /^wp:(?:plugin|theme)-update:/.test(issue.fingerprint);
 
 function sourceLabel(source: string) {
   return ({ wordpress_plugin: "WordPress plugin", security_probe: "Outside security check", vulnerability_feed: "Known vulnerability", browser_monitor: "Browser scan", availability_check: "Availability" } as Record<string, string>)[source] ?? source.replaceAll("_", " ");
@@ -153,7 +153,7 @@ export function IssueBoard<T extends BoardIssue>({
       <article className="board-card severity-edge-low" key={`updates-${groupSiteId}`}>
         <div className="board-card-head">
           <span className="severity severity-low">low</span>
-          <div className="board-card-title"><strong>{updates.length} plugin updates available</strong><small>WordPress plugin · updates are verified and rolled back if the site breaks</small></div>
+          <div className="board-card-title"><strong>{updates.length} updates available</strong><small>WordPress plugin · updates are verified and rolled back if the site breaks</small></div>
           {onUpdateAll && groupSiteId !== "all" && (
             <button className="button secondary" disabled={updateAllBusySiteId === groupSiteId} onClick={() => onUpdateAll(groupSiteId)}>
               {updateAllBusySiteId === groupSiteId ? "Approving…" : "Update all"}
@@ -163,7 +163,7 @@ export function IssueBoard<T extends BoardIssue>({
         <ul className="board-update-list">
           {updates.map((issue) => (
             <li key={issue.id}>
-              <span>{issue.title.replace(/^Plugin update available:\s*/, "")}</span>
+              <span>{issue.title.replace(/^(Plugin|Theme) update available:\s*/, (_match, kind: string) => kind === "Theme" ? "Theme: " : "")}</span>
               <div className="board-update-actions">
                 {renderPrimary(issue)}
                 <button className="button ghost board-toggle" aria-expanded={expanded.has(issue.id)} onClick={() => toggle(issue.id)}>{expanded.has(issue.id) ? "Hide" : "Details"}</button>

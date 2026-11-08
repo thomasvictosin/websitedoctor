@@ -36,7 +36,7 @@ add_action('rest_api_init', 'awd_register_wake_route');
 
 function awd_cleanup_operations(): array
 {
-    return array('quarantine_file', 'restore_core_file', 'remove_htaccess_rules', 'quarantine_plugin', 'demote_user', 'rotate_salts', 'purge_page_cache', 'purge_quarantine', 'update_plugin', 'reinstall_plugin', 'install_plugin', 'set_hardening', 'restore_run');
+    return array('quarantine_file', 'restore_core_file', 'remove_htaccess_rules', 'quarantine_plugin', 'demote_user', 'rotate_salts', 'purge_page_cache', 'purge_quarantine', 'update_plugin', 'reinstall_plugin', 'install_plugin', 'set_hardening', 'restore_run', 'update_theme', 'reinstall_theme', 'quarantine_theme', 'quarantine_theme_file');
 }
 
 function awd_cleanup_root(): string
@@ -138,6 +138,16 @@ function awd_cleanup_step_is_valid($step): bool
             return $keys === array('expectedVersion', 'plugin') && awd_plugin_slug($params['plugin']) !== null
                 && strpos($params['plugin'], 'ai-website-doctor/') !== 0 && (bool) preg_match('#^[a-z0-9-]+/[A-Za-z0-9._-]+\.php$#', $params['plugin'])
                 && (bool) preg_match('/^[0-9A-Za-z.+-]{1,40}$/', $params['expectedVersion']);
+        case 'update_theme':
+            return $keys === array('expectedVersion', 'stylesheet', 'targetVersion') && awd_theme_slug_is_valid($params['stylesheet'])
+                && (bool) preg_match('/^[0-9A-Za-z.+-]{1,40}$/', $params['expectedVersion']) && (bool) preg_match('/^[0-9A-Za-z.+-]{1,40}$/', $params['targetVersion']);
+        case 'reinstall_theme':
+        case 'quarantine_theme':
+            return $keys === array('expectedVersion', 'stylesheet') && awd_theme_slug_is_valid($params['stylesheet'])
+                && (bool) preg_match('/^[0-9A-Za-z.+-]{1,40}$/', $params['expectedVersion']);
+        case 'quarantine_theme_file':
+            return $keys === array('expectedSha256', 'path', 'stylesheet') && awd_theme_slug_is_valid($params['stylesheet'])
+                && awd_cleanup_relative_path_is_valid($params['path']) && $sha($params['expectedSha256']);
         case 'restore_run':
             return $keys === array('runId') && (bool) preg_match('/^[a-z0-9-]{8,64}$/', $params['runId']);
         case 'set_hardening':
@@ -502,6 +512,10 @@ function awd_cleanup_execute_steps(string $run_id, string $repair_id, array $ste
         'install_plugin' => 'awd_cleanup_op_install_plugin',
         'set_hardening' => 'awd_cleanup_op_set_hardening',
         'restore_run' => 'awd_cleanup_op_restore_run',
+        'update_theme' => 'awd_cleanup_op_update_theme',
+        'reinstall_theme' => 'awd_cleanup_op_reinstall_theme',
+        'quarantine_theme' => 'awd_cleanup_op_quarantine_theme',
+        'quarantine_theme_file' => 'awd_cleanup_op_quarantine_theme_file',
     );
     $results = array();
     foreach (array_values($steps) as $index => $step) {
@@ -581,6 +595,12 @@ function awd_cleanup_restore_run(string $run_id, array $context = array()): arra
                 break;
             case 'install_plugin':
                 list($status, $message) = awd_plugin_restore_install($recovery, WP_PLUGIN_DIR, $dir);
+                break;
+            case 'update_theme':
+            case 'reinstall_theme':
+            case 'quarantine_theme':
+            case 'quarantine_theme_file':
+                list($status, $message) = awd_theme_restore($step, $recovery, $dir);
                 break;
             case 'set_hardening':
                 $undo = awd_hardening_apply((string) $recovery['measure'], !empty($recovery['wasEnabled']));
@@ -737,14 +757,15 @@ function awd_issue_is_fixable(array $issue): bool
 {
     $fingerprint = (string) ($issue['fingerprint'] ?? '');
     return ($issue['status'] ?? '') !== 'resolved'
-        && (str_starts_with($fingerprint, 'wp:plugin-update:') || str_starts_with($fingerprint, 'wp:integrity:plugin-modified:') || str_starts_with($fingerprint, 'vuln:plugin-'));
+        && (bool) preg_match('/^(?:wp:plugin-update:|wp:theme-update:|wp:integrity:plugin-modified:|wp:integrity:theme-modified:|vuln:plugin-|vuln:theme-)/', $fingerprint);
 }
 
 function awd_render_fix_button(array $issue): void
 {
     if (!awd_issue_is_fixable($issue) || !preg_match('/^[A-Za-z0-9_-]{1,64}$/', (string) ($issue['id'] ?? ''))) return;
-    $update = str_starts_with((string) $issue['fingerprint'], 'wp:plugin-update:');
-    $vulnerable = str_starts_with((string) $issue['fingerprint'], 'vuln:plugin-');
+    $update = (bool) preg_match('/^wp:(?:plugin|theme)-update:/', (string) $issue['fingerprint']);
+    $vulnerable = (bool) preg_match('/^vuln:(?:plugin|theme)-/', (string) $issue['fingerprint']);
+    $theme = (bool) preg_match('/^(?:wp:theme-update:|wp:integrity:theme-modified:|vuln:theme-)/', (string) $issue['fingerprint']);
     echo '<form class="awd-inline-form" method="post" action="' . esc_url(admin_url('admin-post.php')) . '" onsubmit="return confirm(' . esc_attr(wp_json_encode($vulnerable
         ? 'Fix this vulnerable plugin now? If a fixed version is available it is installed and verified (the old version is put back if the site breaks); if no fix exists yet, the plugin is deactivated and moved to the quarantine.'
         : ($update
@@ -752,7 +773,7 @@ function awd_render_fix_button(array $issue): void
         : 'Reinstall this plugin from WordPress.org? The current files are kept in the quarantine and can be restored.'))) . ');">';
     echo '<input type="hidden" name="action" value="awd_fix_issue"><input type="hidden" name="issue_id" value="' . esc_attr((string) $issue['id']) . '">';
     wp_nonce_field('awd_fix_issue_' . $issue['id']);
-    submit_button($vulnerable ? 'Fix vulnerability now' : ($update ? 'Fix: update plugin now' : 'Fix: reinstall plugin now'), 'primary', 'submit', false);
+    submit_button($vulnerable ? 'Fix vulnerability now' : ($update ? ($theme ? 'Fix: update theme now' : 'Fix: update plugin now') : ($theme ? 'Fix: reinstall theme now' : 'Fix: reinstall plugin now')), 'primary', 'submit', false);
     echo '</form>';
 }
 

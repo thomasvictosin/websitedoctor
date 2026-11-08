@@ -26,6 +26,10 @@ export const CLEANUP_OPERATIONS = [
   "install_plugin",
   "set_hardening",
   "restore_run",
+  "update_theme",
+  "reinstall_theme",
+  "quarantine_theme",
+  "quarantine_theme_file",
 ] as const;
 export type CleanupOperation = typeof CLEANUP_OPERATIONS[number];
 export const MIN_CLEANUP_PLUGIN_VERSION = "0.3.0";
@@ -39,6 +43,7 @@ const relativePath = (value: string) => value.length > 0 && value.length <= 300 
   && !/(^|\/)\.\.?(\/|$)/.test(value) && /^[A-Za-z0-9._@+\- /]+$/.test(value);
 
 const pluginVersion = /^[0-9A-Za-z.+-]{1,40}$/;
+const themeSlug = /^[a-z0-9][a-z0-9_-]{0,99}$/;
 const wordpressOrgPluginFile = (file: string) => /^[a-z0-9][a-z0-9-]{0,99}\/[A-Za-z0-9._-]+\.php$/.test(file) && !file.startsWith("ai-website-doctor/");
 
 export function isAllowedCleanupStep(step: { operation?: unknown; parameters?: unknown }): boolean {
@@ -59,6 +64,10 @@ export function isAllowedCleanupStep(step: { operation?: unknown; parameters?: u
     case "purge_quarantine": return keys === "runId" && /^[a-z0-9-]{8,64}$/.test(p.runId);
     case "update_plugin": return keys === "expectedVersion,plugin,targetVersion" && wordpressOrgPluginFile(p.plugin) && pluginVersion.test(p.expectedVersion) && pluginVersion.test(p.targetVersion);
     case "reinstall_plugin": return keys === "expectedVersion,plugin" && wordpressOrgPluginFile(p.plugin) && pluginVersion.test(p.expectedVersion);
+    case "update_theme": return keys === "expectedVersion,stylesheet,targetVersion" && themeSlug.test(p.stylesheet) && pluginVersion.test(p.expectedVersion) && pluginVersion.test(p.targetVersion);
+    case "reinstall_theme":
+    case "quarantine_theme": return keys === "expectedVersion,stylesheet" && themeSlug.test(p.stylesheet) && pluginVersion.test(p.expectedVersion);
+    case "quarantine_theme_file": return keys === "expectedSha256,path,stylesheet" && themeSlug.test(p.stylesheet) && relativePath(p.path) && sha256.test(p.expectedSha256);
     case "restore_run": return keys === "runId" && /^[a-z0-9-]{8,64}$/.test(p.runId);
     case "set_hardening": return keys === "measure,state" && ["block_php_uploads", "protect_sensitive_files", "disable_file_editor", "disable_xmlrpc", "block_user_enumeration", "security_headers", "verified_crawlers"].includes(p.measure) && ["on", "off"].includes(p.state);
     case "install_plugin": return keys === "activate,slug,version" && /^[a-z0-9][a-z0-9-]{0,99}$/.test(p.slug) && p.slug !== "ai-website-doctor" && pluginVersion.test(p.version) && ["yes", "no"].includes(p.activate);
@@ -221,7 +230,35 @@ export function buildCleanupPlan(input: {
     const step = { description: `Reinstall ${result.plugin.split("/")[0]} ${result.version} from WordPress.org: ${[...strings(result.modified), ...strings(result.addedPhp).map((path) => `${path} (added)`)].slice(0, 3).join(", ")} differ from the official release.`, operation: "reinstall_plugin" as const, parameters: { plugin: result.plugin, expectedVersion: result.version } };
     if (isAllowedCleanupStep(step)) steps.push(step);
   }
-  const optional: CleanupOptionalItem[] = [];
+  // Themes: reinstall tampered WordPress.org themes; offer (never preselect) removal of malicious files in
+  // premium/custom themes, which cannot be reinstalled from WordPress.org.
+  const themes = Array.isArray(diagnostics.themes) ? diagnostics.themes.map(record) : [];
+  const themeIntegrity = Array.isArray(integrity?.themeIntegrity) ? integrity!.themeIntegrity.map(record) : [];
+  const themeOptional: CleanupOptionalItem[] = [];
+  for (const result of themeIntegrity) {
+    const stylesheet = typeof result.stylesheet === "string" ? result.stylesheet : "";
+    const theme = themes.find((item) => item.stylesheet === stylesheet);
+    if (result.status === "modified" && theme?.source === "wordpress.org") {
+      const step = { description: `Reinstall the ${String(theme.name ?? stylesheet)} theme ${String(result.version)} from WordPress.org: ${[...strings(result.modified), ...strings(result.addedPhp).map((path) => `${path} (added)`)].slice(0, 3).join(", ")} differ from the official package.`, operation: "reinstall_theme" as const, parameters: { stylesheet, expectedVersion: String(result.version) } };
+      if (isAllowedCleanupStep(step)) steps.push(step);
+      continue;
+    }
+    for (const file of Array.isArray(result.suspicious) ? result.suspicious.map(record) : []) {
+      const path = typeof file.path === "string" ? file.path : "";
+      const step = { description: `Quarantine ${stylesheet}/${path} (matched ${strings(file.signatures).join(", ")}).`, operation: "quarantine_theme_file" as const, parameters: { stylesheet, path, expectedSha256: String(file.sha256 ?? "") } };
+      if (!isAllowedCleanupStep(step) || ["style.css", "functions.php", "index.php"].includes(path)) {
+        manual.push(`${stylesheet}/${path} matched malware patterns (${strings(file.signatures).join(", ")}). Reinstall the theme from its vendor.`);
+        continue;
+      }
+      themeOptional.push({ id: `theme-file:${stylesheet}/${path}`.slice(0, 120), description: `Quarantine ${stylesheet}/${path}: it matched ${strings(file.signatures).join(", ")}. Premium themes sometimes contain obfuscated licence code; tick only if you do not recognise it.`, step });
+    }
+  }
+  for (const theme of themes) {
+    if (theme.active || theme.parentOfActive || typeof theme.stylesheet !== "string") continue;
+    const step = { description: `Remove the unused ${String(theme.name ?? theme.stylesheet)} theme (moved to the quarantine).`, operation: "quarantine_theme" as const, parameters: { stylesheet: theme.stylesheet, expectedVersion: String(theme.version ?? "") } };
+    if (isAllowedCleanupStep(step)) themeOptional.push({ id: `theme:${theme.stylesheet}`.slice(0, 120), description: `Remove the unused ${String(theme.name ?? theme.stylesheet)} theme ${String(theme.version ?? "")}; inactive themes still contain code attackers can use.`, step });
+  }
+  const optional: CleanupOptionalItem[] = [...themeOptional];
   for (const plugin of plugins) {
     const file = typeof plugin.file === "string" ? plugin.file : "";
     if (!RISKY_PLUGIN_SLUGS.includes(file.split("/")[0])) continue;
@@ -260,7 +297,7 @@ export function buildCleanupPlan(input: {
     manual.push("The outside check shows the site is compromised, but the integrity scan found no file this cleanup can fix. The injected code is probably inside a plugin or theme: reinstall every plugin and theme from its official source.");
   }
   if (compromised) {
-    manual.push("Reinstall premium plugins and your theme from their vendors and delete what you do not use: only WordPress.org plugins can be checked against official checksums.");
+    manual.push("Reinstall premium plugins and premium themes from their vendors and delete what you do not use: only WordPress.org plugins and themes can be compared with official files.");
     manual.push("Change the passwords of every WordPress administrator, your hosting account, SFTP and the database.");
     manual.push("In Google Search Console, review Security issues, resubmit your real sitemap and request removal of the spam URLs.");
     warnings.push("These changes are made on your live site. Every changed or removed file is kept in a private quarantine and the run can be restored from the plugin until you purge it.");
@@ -346,9 +383,67 @@ export function pluginUpdateSteps(diagnostics: unknown, only?: string[]): FixPla
   return { steps, title: steps.length === 1 ? steps[0].description.replace(/ from WordPress\.org\.$/, "") : `Update ${steps.length} plugins`, skipped };
 }
 
+/** Update steps for WordPress.org themes with an available update (optionally only the listed stylesheets). */
+export function themeUpdateSteps(diagnostics: unknown, only?: string[]): FixPlan {
+  const themes = Array.isArray(record(diagnostics).themes) ? (record(diagnostics).themes as unknown[]).map(record) : [];
+  const steps: CleanupStep[] = [];
+  const skipped: string[] = [];
+  for (const theme of themes) {
+    const stylesheet = typeof theme.stylesheet === "string" ? theme.stylesheet : "";
+    if (!theme.updateAvailable || (only && !only.includes(stylesheet))) continue;
+    const name = String(theme.name ?? stylesheet);
+    if (theme.source !== "wordpress.org") { skipped.push(`${name} theme: not hosted on WordPress.org (premium or custom); update it from its vendor.`); continue; }
+    if (typeof theme.newVersion !== "string") { skipped.push(`${name} theme: the target version is unknown; sync diagnostics again.`); continue; }
+    const step = { description: `Update the ${name} theme ${String(theme.version)} → ${theme.newVersion} from WordPress.org.`, operation: "update_theme" as const, parameters: { stylesheet, expectedVersion: String(theme.version ?? ""), targetVersion: theme.newVersion } };
+    if (isAllowedCleanupStep(step)) steps.push(step);
+  }
+  return { steps, title: steps.length === 1 ? steps[0].description.replace(/ from WordPress\.org\.$/, "") : `Update ${steps.length} themes`, skipped };
+}
+
+/** Every available WordPress.org plugin and theme update, for "Update all". */
+export function allUpdateSteps(diagnostics: unknown): FixPlan {
+  const plugins = pluginUpdateSteps(diagnostics);
+  const themes = themeUpdateSteps(diagnostics);
+  const steps = [...plugins.steps, ...themes.steps];
+  const parts = [plugins.steps.length ? `${plugins.steps.length} plugin(s)` : "", themes.steps.length ? `${themes.steps.length} theme(s)` : ""].filter(Boolean);
+  return { steps, title: steps.length === 1 ? steps[0].description.replace(/ from WordPress\.org\.$/, "") : `Update ${parts.join(" and ")}`, skipped: [...plugins.skipped, ...themes.skipped] };
+}
+
+/** Stylesheet for a "wp:theme-update:<hash>" fingerprint (the plugin hashes the stylesheet). */
+export function themeForUpdateFingerprint(fingerprint: string, themes: Array<Record<string, unknown>>) {
+  const hash = fingerprint.replace(/^wp:theme-update:/, "");
+  return themes.find((theme) => typeof theme.stylesheet === "string" && createHash("sha256").update(theme.stylesheet).digest("hex").slice(0, 20) === hash) ?? null;
+}
+
 /** The one-click fix for an issue, or null when the finding has no automatic fix. */
 export function fixPlanForIssue(fingerprint: string, diagnostics: unknown): FixPlan | null {
   const plugins = Array.isArray(record(diagnostics).plugins) ? (record(diagnostics).plugins as unknown[]).map(record) : [];
+  const themes = Array.isArray(record(diagnostics).themes) ? (record(diagnostics).themes as unknown[]).map(record) : [];
+  if (fingerprint.startsWith("wp:theme-update:")) {
+    const theme = themeForUpdateFingerprint(fingerprint, themes);
+    if (!theme || typeof theme.stylesheet !== "string") return { steps: [], title: "Update theme", skipped: ["The theme is no longer in the latest diagnostics; sync again."] };
+    return themeUpdateSteps(diagnostics, [theme.stylesheet]);
+  }
+  if (fingerprint.startsWith("wp:integrity:theme-modified:")) {
+    const stylesheet = fingerprint.replace(/^wp:integrity:theme-modified:/, "");
+    const theme = themes.find((item) => item.stylesheet === stylesheet);
+    if (!theme) return { steps: [], title: "Reinstall theme", skipped: ["The theme is no longer installed."] };
+    if (theme.source !== "wordpress.org") return { steps: [], title: "Reinstall theme", skipped: [`${String(theme.name)} is not hosted on WordPress.org; reinstall it from its vendor.`] };
+    const step = { description: `Reinstall the ${String(theme.name)} theme ${String(theme.version)} from WordPress.org.`, operation: "reinstall_theme" as const, parameters: { stylesheet, expectedVersion: String(theme.version ?? "") } };
+    return isAllowedCleanupStep(step) ? { steps: [step], title: step.description.replace(/ from WordPress\.org\.$/, ""), skipped: [] } : { steps: [], title: "Reinstall theme", skipped: ["The theme cannot be reinstalled automatically."] };
+  }
+  const vulnerableTheme = /^vuln:theme-([a-z0-9_-]+):/.exec(fingerprint);
+  if (vulnerableTheme) {
+    const theme = themes.find((item) => item.stylesheet === vulnerableTheme[1]);
+    if (!theme || typeof theme.stylesheet !== "string") return { steps: [], title: "Fix vulnerable theme", skipped: ["The theme is no longer installed."] };
+    const evidence = (record(diagnostics).__issueEvidence ?? {}) as Record<string, unknown>;
+    const fixedIn = typeof evidence.fixedIn === "string" ? evidence.fixedIn : null;
+    if (fixedIn && typeof theme.newVersion === "string" && compareVersions(theme.newVersion, fixedIn) >= 0) return themeUpdateSteps(diagnostics, [theme.stylesheet]);
+    if (fixedIn) return { steps: [], title: "Update vulnerable theme", skipped: [theme.source === "wordpress.org" ? `WordPress has not offered version ${fixedIn} yet; sync diagnostics again.` : `Update the ${String(theme.name)} theme to ${fixedIn} from its vendor.`] };
+    if (theme.active || theme.parentOfActive) return { steps: [], title: "Vulnerable active theme", skipped: [`The active theme (or its parent) has a known vulnerability with no fix yet. It is not removed automatically; switch to another theme or contact the theme vendor.`] };
+    const step = { description: `Remove the unused ${String(theme.name)} theme: it has a known vulnerability with no fixed version yet.`, operation: "quarantine_theme" as const, parameters: { stylesheet: theme.stylesheet, expectedVersion: String(theme.version ?? "") } };
+    return isAllowedCleanupStep(step) ? { steps: [step], title: `Remove vulnerable ${String(theme.name)} theme`, skipped: [] } : { steps: [], title: "Remove vulnerable theme", skipped: ["The theme cannot be removed automatically."] };
+  }
   if (fingerprint.startsWith("wp:plugin-update:")) {
     const plugin = pluginForUpdateFingerprint(fingerprint, plugins);
     if (!plugin || typeof plugin.file !== "string") return { steps: [], title: "Update plugin", skipped: ["The plugin is no longer in the latest diagnostics; sync again."] };

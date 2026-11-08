@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { db } from "./db.ts";
-import { buildCleanupPlan, cleanupStepSchema, cleanupStepsDigest, fetchOfficialChecksums, fixPlanForIssue, pluginUpdateSteps, selectCleanupSteps, type CleanupPlan, type CleanupStep } from "./cleanup-plan.ts";
+import { allUpdateSteps, buildCleanupPlan, cleanupStepSchema, cleanupStepsDigest, fetchOfficialChecksums, fixPlanForIssue, pluginUpdateSteps, selectCleanupSteps, type CleanupPlan, type CleanupStep } from "./cleanup-plan.ts";
 import { checkWebsite } from "./monitor.ts";
 import { runAndStoreSecurityCheck } from "./monitoring-service.ts";
 import { notifySite } from "./protection.ts";
@@ -417,6 +417,11 @@ export async function startIssueFix(input: { issueId: string; websiteId: string;
   if (!issue) throw new CleanupError("Issue not found.", 404);
   if (issue.status === "resolved") throw new CleanupError("This issue is already resolved.", 409);
   await requireMaintenancePlugin(agent);
+  if (/^(?:wp:theme-update:|wp:integrity:theme-modified:|vuln:theme-)/.test(issue.fingerprint)) {
+    const version = record(record(agent!.diagnostics).site).pluginVersion;
+    const [major, minor] = typeof version === "string" ? version.split(".").map(Number) : [0, 0];
+    if (!(major > 0 || minor >= 7)) throw new CleanupError(`Theme fixes need AI Website Doctor 0.7.0 or later on the site (it reports ${typeof version === "string" ? version : "an older version"}).`, 409);
+  }
   const fix = fixPlanForIssue(issue.fingerprint, { ...record(agent!.diagnostics), __issueEvidence: issue.evidence });
   if (!fix) throw new CleanupError("This finding has no one-click fix; follow its recommendation instead.", 400);
   if (!fix.steps.length) throw new CleanupError(fix.skipped.join(" ") || "There is nothing to fix.", 409);
@@ -427,8 +432,9 @@ export async function startIssueFix(input: { issueId: string; websiteId: string;
 export async function startPluginUpdates(input: { websiteId: string; organizationId: string; plugins?: string[]; actor: CleanupActor }) {
   const agent = await db.wordPressAgent.findFirst({ where: { websiteId: input.websiteId, revokedAt: null }, select: { diagnostics: true, lastSeenAt: true } });
   await requireMaintenancePlugin(agent);
-  const updates = pluginUpdateSteps(agent!.diagnostics, input.plugins);
-  if (!updates.steps.length) throw new CleanupError(updates.skipped.join(" ") || "No WordPress.org plugin has an update available.", 409);
+  // Without a selection, "Update all" covers WordPress.org plugins and themes.
+  const updates = input.plugins ? pluginUpdateSteps(agent!.diagnostics, input.plugins) : allUpdateSteps(agent!.diagnostics);
+  if (!updates.steps.length) throw new CleanupError(updates.skipped.join(" ") || "No WordPress.org plugin or theme has an update available.", 409);
   const started = await startCleanup({ websiteId: input.websiteId, organizationId: input.organizationId, planDigest: "update_plugins", include: [], actor: input.actor, explicit: { steps: updates.steps, title: updates.title, mode: "maintenance" } });
   return { ...started, skipped: updates.skipped };
 }
@@ -443,8 +449,8 @@ async function requireMaintenancePlugin(agent: { diagnostics: unknown; lastSeenA
 
 /** Summary of one-click maintenance available for a site (shown next to the cleanup plan). */
 export function maintenanceSummary(diagnostics: unknown) {
-  const updates = pluginUpdateSteps(diagnostics);
-  return { pluginUpdates: updates.steps.map((step) => ({ plugin: step.parameters.plugin, description: step.description })), notUpdatable: updates.skipped };
+  const updates = allUpdateSteps(diagnostics);
+  return { pluginUpdates: updates.steps.map((step) => ({ plugin: step.parameters.plugin ?? `theme:${step.parameters.stylesheet}`, description: step.description })), notUpdatable: updates.skipped };
 }
 
 /** Turn protection measures on or off on the site through the approved executor. */

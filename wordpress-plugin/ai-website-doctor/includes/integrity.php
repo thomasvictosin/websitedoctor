@@ -345,7 +345,7 @@ function awd_integrity_admins(): array
 }
 
 /** Cached integrity report for this site; $force reruns the scan. $plugins enables WordPress.org plugin checksum checks. */
-function awd_integrity_report(bool $force = false, array $plugins = array()): array
+function awd_integrity_report(bool $force = false, array $plugins = array(), array $themes = array()): array
 {
     $cached = get_option(AWD_INTEGRITY_OPTION);
     if (!$force && is_array($cached) && isset($cached['scannedAt']) && strtotime((string) $cached['scannedAt']) > time() - AWD_INTEGRITY_MAX_AGE) {
@@ -359,12 +359,13 @@ function awd_integrity_report(bool $force = false, array $plugins = array()): ar
         'contentDir' => defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR : ABSPATH . 'wp-content',
         'uploadsDir' => is_array($uploads) && !empty($uploads['basedir']) ? (string) $uploads['basedir'] : null,
         'muPluginsDir' => defined('WPMU_PLUGIN_DIR') ? WPMU_PLUGIN_DIR : null,
-        'themeDirs' => $theme_dirs,
+        'themeDirs' => function_exists('awd_theme_integrity_report') ? array() : $theme_dirs,
         'admins' => awd_integrity_admins(),
         'version' => (string) get_bloginfo('version'),
         'locale' => function_exists('get_locale') ? (string) get_locale() : 'en_US',
     ));
     if (function_exists('awd_plugin_integrity_report') && $plugins) $report['pluginIntegrity'] = awd_plugin_integrity_report($plugins, $force);
+    if (function_exists('awd_theme_integrity_report') && $themes) $report['themeIntegrity'] = awd_theme_integrity_report($themes, $force);
     update_option(AWD_INTEGRITY_OPTION, $report, false);
     return $report;
 }

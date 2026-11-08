@@ -77,6 +77,10 @@ export function matchVulnerabilities(index: Pick<VulnerabilityIndex, "bySlug">, 
   const installed: Array<{ key: string; name: string; version: string; file: string | null; newVersion: string | null; source: string | null }> = plugins
     .filter((plugin) => typeof plugin.file === "string" && plugin.file.includes("/"))
     .map((plugin) => ({ key: `plugin:${String(plugin.file).split("/")[0]}`, name: String(plugin.name ?? plugin.file), version: String(plugin.version ?? ""), file: String(plugin.file), newVersion: typeof plugin.newVersion === "string" ? plugin.newVersion : null, source: typeof plugin.source === "string" ? plugin.source : null }));
+  for (const theme of Array.isArray(data.themes) ? data.themes.map(record) : []) {
+    if (typeof theme.stylesheet !== "string") continue;
+    installed.push({ key: `theme:${theme.stylesheet}`, name: `${String(theme.name ?? theme.stylesheet)} theme`, version: String(theme.version ?? ""), file: null, newVersion: typeof theme.newVersion === "string" ? theme.newVersion : null, source: typeof theme.source === "string" ? theme.source : null });
+  }
   const wpVersion = typeof record(data.site).wpVersion === "string" ? String(record(data.site).wpVersion) : "";
   if (wpVersion) installed.push({ key: "core:wordpress", name: "WordPress", version: wpVersion, file: null, newVersion: null, source: "wordpress.org" });
   for (const item of installed) {
@@ -114,6 +118,9 @@ export async function refreshVulnerabilityIndex(fetcher: typeof fetch = fetch) {
   for (const agent of agents) {
     for (const plugin of Array.isArray(record(agent.diagnostics).plugins) ? (record(agent.diagnostics).plugins as unknown[]).map(record) : []) {
       if (typeof plugin.file === "string" && plugin.file.includes("/")) wanted.add(`plugin:${plugin.file.split("/")[0]}`);
+    }
+    for (const theme of Array.isArray(record(agent.diagnostics).themes) ? (record(agent.diagnostics).themes as unknown[]).map(record) : []) {
+      if (typeof theme.stylesheet === "string") wanted.add(`theme:${theme.stylesheet}`);
     }
   }
   const response = await fetcher(FEED_URL, { headers: { authorization: `Bearer ${apiKey}`, accept: "application/json" }, signal: AbortSignal.timeout(45_000) });

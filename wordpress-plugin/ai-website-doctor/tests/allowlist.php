@@ -393,4 +393,46 @@ awd_test_assert(!awd_cleanup_step_is_valid(array('operation' => 'set_hardening',
 $standard = awd_integrity_htaccess_analysis("RewriteEngine On\nRewriteRule ^index\\.php$ - [L]\nRewriteRule ^(.*)$ wp-cache.php?p=$1 [L]\n");
 awd_test_assert(count($standard) === 1 && $standard[0]['line'] === 3, 'the standard escaped index.php rule must not be flagged; a foreign script rewrite must');
 
+// Themes: official-package comparison, malware scan of any theme, issues and operation validation.
+$theme_fixture = sys_get_temp_dir() . '/awd-theme-fixture-' . bin2hex(random_bytes(4));
+mkdir($theme_fixture . '/inc', 0755, true);
+file_put_contents($theme_fixture . '/style.css', "/* Theme Name: Fixture */\n");
+file_put_contents($theme_fixture . '/functions.php', "<?php\n// official\n");
+file_put_contents($theme_fixture . '/inc/loader.php', "<?php return; eval(base64_decode('eA=='));\n");
+$official_theme = array('style.css' => md5("/* Theme Name: Fixture */\n"), 'functions.php' => md5("<?php\n// changed by attacker\n"), 'readme.txt' => md5('x'));
+$theme_comparison = awd_theme_compare($theme_fixture, $official_theme);
+awd_test_assert($theme_comparison['modified'] === array('functions.php') && $theme_comparison['missing'] === 1 && $theme_comparison['addedPhp'] === array('inc/loader.php'), 'theme comparison must report modified, missing and added PHP files');
+$theme_php = array_map(static function ($path) use ($theme_fixture) { return substr($path, strlen($theme_fixture) + 1); }, awd_theme_php_files($theme_fixture, microtime(true) + 5, 100));
+sort($theme_php);
+awd_test_assert($theme_php === array('functions.php', 'inc/loader.php'), 'theme scan must find PHP files recursively');
+awd_test_assert(awd_integrity_scan_file($theme_fixture . '/inc/loader.php') !== array(), 'malware in a nested theme file must be detected');
+awd_cleanup_remove_tree($theme_fixture);
+$theme_issues = array_column(awd_theme_issues(
+    array(
+        array('stylesheet' => 'bauen-child', 'name' => 'Bauen Child', 'version' => '1.0', 'active' => true, 'parentOfActive' => false, 'updateAvailable' => false, 'source' => 'other'),
+        array('stylesheet' => 'bauen', 'name' => 'Bauen', 'version' => '2.1', 'active' => false, 'parentOfActive' => true, 'updateAvailable' => true, 'newVersion' => '2.2', 'source' => 'other'),
+        array('stylesheet' => 'twentytwentyfour', 'name' => 'Twenty Twenty-Four', 'version' => '1.2', 'active' => false, 'parentOfActive' => false, 'updateAvailable' => true, 'newVersion' => '1.3', 'source' => 'wordpress.org'),
+        array('stylesheet' => 'twentytwentythree', 'name' => 'Twenty Twenty-Three', 'version' => '1.5', 'active' => false, 'parentOfActive' => false, 'updateAvailable' => false, 'source' => 'wordpress.org'),
+    ),
+    array(
+        array('stylesheet' => 'bauen-child', 'version' => '1.0', 'status' => 'suspicious', 'modified' => array(), 'addedPhp' => array(), 'suspicious' => array(array('path' => 'inc/x.php', 'signatures' => array('eval_encoded_payload'), 'sha256' => str_repeat('a', 64)))),
+        array('stylesheet' => 'twentytwentyfour', 'version' => '1.2', 'status' => 'modified', 'modified' => array('functions.php'), 'addedPhp' => array(), 'suspicious' => array()),
+    )
+), 'severity', 'fingerprint');
+awd_test_assert(($theme_issues['integrity:theme-malware:bauen-child'] ?? '') === 'critical', 'malware in a custom theme must be critical');
+awd_test_assert(($theme_issues['integrity:theme-modified:twentytwentyfour'] ?? '') === 'high', 'a modified WordPress.org theme must be high');
+awd_test_assert(($theme_issues['integrity:unused-themes'] ?? '') === 'low', 'unused themes must be reported');
+awd_test_assert(($theme_issues['theme-update:' . substr(hash('sha256', 'bauen'), 0, 20)] ?? '') === 'medium', 'an update to the active theme parent must be medium');
+awd_test_assert(($theme_issues['theme-update:' . substr(hash('sha256', 'twentytwentyfour'), 0, 20)] ?? '') === 'low', 'an update to an inactive theme must be low');
+foreach (array(
+    array('operation' => 'update_theme', 'parameters' => array('stylesheet' => 'twentytwentyfour', 'expectedVersion' => '1.2', 'targetVersion' => '1.3')),
+    array('operation' => 'reinstall_theme', 'parameters' => array('stylesheet' => 'twentytwentyfour', 'expectedVersion' => '1.2')),
+    array('operation' => 'quarantine_theme', 'parameters' => array('stylesheet' => 'twentytwentythree', 'expectedVersion' => '1.5')),
+    array('operation' => 'quarantine_theme_file', 'parameters' => array('stylesheet' => 'bauen-child', 'path' => 'inc/x.php', 'expectedSha256' => str_repeat('a', 64))),
+) as $step) awd_test_assert(awd_cleanup_step_is_valid($step), 'theme step must validate: ' . $step['operation']);
+foreach (array(
+    array('operation' => 'update_theme', 'parameters' => array('stylesheet' => '../x', 'expectedVersion' => '1', 'targetVersion' => '2')),
+    array('operation' => 'quarantine_theme_file', 'parameters' => array('stylesheet' => 'bauen-child', 'path' => '../../wp-config.php', 'expectedSha256' => str_repeat('a', 64))),
+) as $bad) awd_test_assert(!awd_cleanup_step_is_valid($bad), 'unsafe theme step must be rejected');
+
 echo "WordPress plugin tests passed.\n";

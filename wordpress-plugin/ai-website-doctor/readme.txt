@@ -3,7 +3,7 @@ Contributors: ai-website-doctor
 Tags: diagnostics, monitoring, wordpress
 Requires at least: 6.2
 Requires PHP: 8.0
-Stable tag: 0.6.3
+Stable tag: 0.7.0
 License: GPL-2.0-or-later
 
 Connects a WordPress site to a locally hosted AI Website Doctor app for authorized diagnostics and explicitly approved, allowlisted repairs.
@@ -52,6 +52,10 @@ Every step re-checks its target's content digest immediately before changing it 
 == One-click plugin fixes ==
 
 Each installed WordPress.org plugin is compared with the official per-file checksums for its version (cached for six hours); modified files and added PHP files are reported as a finding. "Plugin update available" findings show Fix: update plugin now, and modified plugins show Fix: reinstall plugin now; the central app's Cleanup tab can also update every WordPress.org plugin at once. The current plugin directory is moved into the quarantine, the exact approved version is installed from downloads.wordpress.org with WordPress's own installer, every file is verified against the official checksums, and the home page is loaded; if any check fails, the previous version is put back automatically. Premium plugins that are not on WordPress.org must be updated from their vendor. Updates need WordPress to write plugin files directly (no FTP credentials prompt).
+
+== Themes ==
+
+Every installed theme is listed with its version, parent and available update. The active theme and its parent, when they come from WordPress.org, are compared file by file with the official package for their exact version (WordPress.org publishes no per-file theme checksums); every theme, including premium and custom ones, has all its PHP files scanned for malware patterns. Findings cover theme updates, modified WordPress.org theme files, malware patterns in any theme, unused themes and known theme vulnerabilities. Fixes update or reinstall WordPress.org themes from the official package with automatic rollback if the site breaks, remove unused themes into the quarantine (never the active theme or its parent), and, only when you tick it, quarantine a single malicious file in a premium or custom theme. Premium themes are updated from their vendors.
 
 == Protection and alerts ==
 

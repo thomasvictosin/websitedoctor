@@ -50,6 +50,10 @@ const OPERATION_LABELS: Record<string, string> = {
   install_plugin: "Install plugin",
   set_hardening: "Protection",
   restore_run: "Restore run",
+  update_theme: "Update theme",
+  reinstall_theme: "Reinstall theme",
+  quarantine_theme: "Remove theme",
+  quarantine_theme_file: "Quarantine theme file",
 };
 
 const ACTIVE = ["approved", "executing"];

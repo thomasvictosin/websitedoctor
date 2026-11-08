@@ -26,6 +26,9 @@ Allowed operations, each bound to evidence the owner reviewed:
 | `install_plugin` | A WordPress.org plugin slug that is not installed, at an exact version, verified the same way; optional activation is undone if the site breaks. | Restore deactivates it and moves it to the quarantine |
 | `set_hardening` | One protection measure on or off. `.htaccess` measures write only between `# BEGIN/END AI Website Doctor hardening` markers (the injection detector trusts that block only while it matches the digest the plugin recorded), are tested on the server, and the root rules are removed again if the home page returns 5xx. Runtime measures are plugin filters. | Previous on/off state |
 | `restore_run` | Requested from the app for a finished run that still has its quarantine: reverses that run's applied steps under the same conflict rule as a local restore. | None (it is the undo) |
+| `update_theme` / `reinstall_theme` | An installed WordPress.org theme at the reviewed version. WordPress.org publishes no per-file theme checksums, so the plugin downloads the official package for the target version from `downloads.wordpress.org`, installs it with WordPress's installer and compares every installed file with that package. The home page is loaded before and after; on any failure the previous directory is put back. | The previous theme directory |
+| `quarantine_theme` | An installed theme that is neither active nor the active theme's parent (opt-in, never preselected). | The theme directory |
+| `quarantine_theme_file` | One file in a premium or custom theme that matched malware patterns, bound to its SHA-256; never `style.css`, `functions.php` or `index.php`. Opt-in only, because premium themes can contain legitimate obfuscated licence code. | The file |
 
 Invariants:
 

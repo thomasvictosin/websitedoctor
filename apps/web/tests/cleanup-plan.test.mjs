@@ -174,3 +174,45 @@ test("protection steps validate and self-healing is limited to safe operations",
     assert.ok(!SELF_HEAL_OPERATIONS.includes(risky), `${risky} must never run without a person`);
   }
 });
+
+test("themes: updates, reinstalls, vulnerable themes and the cleanup plan", async () => {
+  const { createHash } = await import("node:crypto");
+  const { allUpdateSteps, fixPlanForIssue } = await import("../lib/cleanup-plan.ts");
+  const { matchVulnerabilities, parseFeed } = await import("../lib/vulnerabilities.ts");
+  const data = diagnostics();
+  data.site.pluginVersion = "0.7.0";
+  data.plugins = [{ name: "Elementor", version: "4.3.5", file: "elementor/elementor.php", active: true, updateAvailable: true, source: "wordpress.org", newVersion: "4.3.6" }];
+  data.themes = [
+    { stylesheet: "bauen-child", name: "Bauen Child", version: "1.0", parent: "bauen", active: true, parentOfActive: false, updateAvailable: false, source: "other" },
+    { stylesheet: "bauen", name: "Bauen", version: "2.1", parent: null, active: false, parentOfActive: true, updateAvailable: true, newVersion: "2.2", source: "other" },
+    { stylesheet: "twentytwentyfour", name: "Twenty Twenty-Four", version: "1.2", parent: null, active: false, parentOfActive: false, updateAvailable: true, newVersion: "1.3", source: "wordpress.org" },
+  ];
+  data.integrity.themeIntegrity = [
+    { stylesheet: "bauen-child", version: "1.0", status: "suspicious", modified: [], addedPhp: [], suspicious: [{ path: "inc/loader.php", signatures: ["eval_encoded_payload"], sha256: h("c") }, { path: "functions.php", signatures: ["eval_encoded_payload"], sha256: h("e") }], checkedAt: NOW.toISOString() },
+    { stylesheet: "twentytwentyfour", version: "1.2", status: "modified", modified: ["functions.php"], addedPhp: [], suspicious: [], checkedAt: NOW.toISOString() },
+  ];
+  const all = allUpdateSteps(data);
+  assert.deepEqual(all.steps.map((step) => step.operation), ["update_plugin", "update_theme"]);
+  assert.match(all.title, /1 plugin\(s\) and 1 theme\(s\)/);
+  assert.ok(all.skipped.some((item) => /Bauen theme: not hosted on WordPress\.org/.test(item)), "premium theme updates go to the vendor");
+  const themeHash = createHash("sha256").update("twentytwentyfour").digest("hex").slice(0, 20);
+  assert.deepEqual(fixPlanForIssue(`wp:theme-update:${themeHash}`, data).steps[0].parameters, { stylesheet: "twentytwentyfour", expectedVersion: "1.2", targetVersion: "1.3" });
+  assert.equal(fixPlanForIssue("wp:integrity:theme-modified:twentytwentyfour", data).steps[0].operation, "reinstall_theme");
+  assert.equal(fixPlanForIssue("wp:integrity:theme-modified:bauen", data).steps.length, 0, "premium themes are reinstalled from the vendor");
+  const plan = buildCleanupPlan({ diagnostics: data, openIssues: issues, officialChecksums: official, now: NOW });
+  assert.ok(plan.steps.some((step) => step.operation === "reinstall_theme" && step.parameters.stylesheet === "twentytwentyfour"));
+  assert.ok(plan.optional.some((item) => item.id === "theme-file:bauen-child/inc/loader.php"), "custom-theme malware is optional, never preselected");
+  assert.ok(!plan.steps.some((step) => step.operation === "quarantine_theme_file"));
+  assert.ok(!plan.optional.some((item) => item.id === "theme-file:bauen-child/functions.php") && plan.manual.some((item) => item.includes("bauen-child/functions.php")), "required theme files are never quarantined");
+  assert.ok(plan.optional.some((item) => item.id === "theme:twentytwentyfour") && !plan.optional.some((item) => item.id === "theme:bauen" || item.id === "theme:bauen-child"), "only unused themes can be removed");
+  const feed = {
+    t1: { id: "t1", title: "Bauen <= 2.1 - Unauthenticated Option Update", cvss: { score: 9.1, rating: "Critical" }, software: [{ type: "theme", slug: "bauen", affected_versions: { "* - 2.1": { from_version: "*", from_inclusive: true, to_version: "2.1", to_inclusive: true } }, patched_versions: [] }] },
+    t2: { id: "t2", title: "Twenty Twenty-Four <= 1.2 - XSS", cvss: { score: 6.1, rating: "Medium" }, software: [{ type: "theme", slug: "twentytwentyfour", affected_versions: { "* - 1.2": { from_version: "*", to_version: "1.2" } }, patched_versions: ["1.3"] }] },
+  };
+  const findings = matchVulnerabilities(parseFeed(feed, new Set(["theme:bauen", "theme:twentytwentyfour"])), data);
+  assert.deepEqual(findings.map((finding) => finding.fingerprint).sort(), ["vuln:theme-bauen:t1", "vuln:theme-twentytwentyfour:t2"]);
+  const parentFix = fixPlanForIssue("vuln:theme-bauen:t1", { ...data, __issueEvidence: findings.find((finding) => finding.fingerprint === "vuln:theme-bauen:t1").evidence });
+  assert.equal(parentFix.steps.length, 0, "the active theme's parent is never removed automatically");
+  const updateFix = fixPlanForIssue("vuln:theme-twentytwentyfour:t2", { ...data, __issueEvidence: findings.find((finding) => finding.fingerprint === "vuln:theme-twentytwentyfour:t2").evidence });
+  assert.equal(updateFix.steps[0].operation, "update_theme");
+});

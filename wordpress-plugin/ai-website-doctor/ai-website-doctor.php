@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AI Website Doctor
  * Description: Connects this WordPress site to a locally hosted AI Website Doctor for diagnostics and explicitly approved repairs.
- * Version: 0.6.3
+ * Version: 0.7.0
  * Requires at least: 6.2
  * Requires PHP: 8.0
  * License: GPL-2.0-or-later
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('AWD_VERSION', '0.6.3');
+define('AWD_VERSION', '0.7.0');
 define('AWD_OPTION', 'ai_website_doctor_settings');
 define('AWD_RECOVERY_OPTION', 'ai_website_doctor_recovery_points');
 define('AWD_SYNC_OPTION', 'ai_website_doctor_sync_state');
@@ -25,6 +25,7 @@ define('AWD_CONFLICT_REPORT_OPTION', 'ai_website_doctor_staging_conflict_report'
 require_once __DIR__ . '/includes/integrity.php';
 require_once __DIR__ . '/includes/cleanup.php';
 require_once __DIR__ . '/includes/plugin-maintenance.php';
+require_once __DIR__ . '/includes/themes.php';
 require_once __DIR__ . '/includes/hardening.php';
 require_once __DIR__ . '/includes/alerts.php';
 
@@ -820,17 +821,17 @@ function awd_render_central_issues(array $settings, $dashboard): void
     usort($resolved, static function ($a, $b) { return strcmp((string) ($b['resolvedAt'] ?? $b['lastSeenAt'] ?? ''), (string) ($a['resolvedAt'] ?? $a['lastSeenAt'] ?? '')); });
     echo '<p class="awd-muted">' . esc_html(sprintf('%d open · %d resolved', count($open), count($resolved))) . '</p>';
     if (!$open) echo '<p class="awd-board-empty">No open issues. Everything that was found has been resolved.</p>';
-    $updates = array_values(array_filter($open, static function ($issue) { return str_starts_with((string) ($issue['fingerprint'] ?? ''), 'wp:plugin-update:'); }));
+    $updates = array_values(array_filter($open, static function ($issue) { return (bool) preg_match('/^wp:(?:plugin|theme)-update:/', (string) ($issue['fingerprint'] ?? '')); }));
     $fold = count($updates) >= 2;
     foreach ($open as $issue) {
-        if ($fold && str_starts_with((string) ($issue['fingerprint'] ?? ''), 'wp:plugin-update:')) continue;
+        if ($fold && preg_match('/^wp:(?:plugin|theme)-update:/', (string) ($issue['fingerprint'] ?? ''))) continue;
         awd_render_issue_card($settings, $issue);
     }
     if ($fold) {
-        echo '<article class="awd-issue awd-issue-low"><h3>' . esc_html(sprintf('%d plugin updates available', count($updates))) . ' <span class="awd-muted">LOW</span></h3>';
+        echo '<article class="awd-issue awd-issue-low"><h3>' . esc_html(sprintf('%d updates available', count($updates))) . ' <span class="awd-muted">LOW</span></h3>';
         echo '<p class="awd-muted">Each update is verified against the official WordPress.org files and rolled back automatically if the site breaks.</p><ul class="awd-update-list">';
         foreach ($updates as $issue) {
-            echo '<li><span>' . esc_html(preg_replace('/^Plugin update available:\s*/', '', (string) ($issue['title'] ?? ''))) . '</span>';
+            echo '<li><span>' . esc_html(preg_replace(array('/^Plugin update available:\s*/', '/^Theme update available:\s*/'), array('', 'Theme: '), (string) ($issue['title'] ?? ''))) . '</span>';
             awd_render_fix_button($issue);
             echo '</li>';
         }
@@ -1091,9 +1092,11 @@ function awd_collect_diagnostics(array $settings): array
     $authorized_log_excerpt = !empty($settings['collect_logs']) ? awd_authorized_log_excerpt() : '';
     $php_log_errors = $authorized_log_excerpt !== '' ? awd_parse_php_log_errors($authorized_log_excerpt) : array();
 
-    $integrity = awd_integrity_report(!empty($GLOBALS['awd_force_integrity_scan']), $plugins);
+    $themes = awd_theme_inventory();
+    $integrity = awd_integrity_report(!empty($GLOBALS['awd_force_integrity_scan']), $plugins, $themes);
     // Compromise findings come first so payload truncation never drops them.
-    $issues = awd_integrity_issues($integrity);
+    $issues = array_merge(awd_integrity_issues($integrity), awd_theme_issues($themes, (array) ($integrity['themeIntegrity'] ?? array())));
+    usort($issues, static function ($a, $b) { $rank = array('critical' => 4, 'high' => 3, 'medium' => 2, 'low' => 1); return ($rank[$b['severity']] ?? 0) <=> ($rank[$a['severity']] ?? 0); });
     if (version_compare(PHP_VERSION, '8.0', '<')) {
         $issues[] = array('fingerprint' => 'php-version-low', 'title' => 'PHP version is outdated', 'description' => 'This site runs PHP ' . PHP_VERSION . '. Upgrade to a currently supported PHP release after checking theme and plugin compatibility.', 'severity' => 'high');
     }
@@ -1183,6 +1186,7 @@ function awd_collect_diagnostics(array $settings): array
             'blogdescription' => (string) get_option('blogdescription', ''),
         ),
         'plugins' => array_slice($plugins, 0, 100),
+        'themes' => $themes,
         'editablePages' => $editable_pages,
         'fatalErrors' => $fatal_events,
         'phpErrors' => $php_log_errors,
