@@ -327,7 +327,8 @@ function collectFindings(snapshot: Record<string, any>, runtimeErrors: string[],
   for (const violation of (Array.isArray(snapshot.accessibility) ? snapshot.accessibility : []).slice(0, 50)) {
     const ruleId = String(violation.id ?? "unknown").slice(0, 80);
     const impact = String(violation.impact ?? "moderate");
-    const severity = impact === "critical" || impact === "serious" ? "high" : "medium";
+    // Accessibility barriers are not security risks: only axe "critical" (content unusable for some visitors) is high.
+    const severity = impact === "critical" ? "high" : impact === "serious" ? "medium" : "low";
     findings.push(finding("accessibility-" + ruleId, pageUrl, String(violation.help ?? ruleId).slice(0, 200), severity, String(violation.description ?? "Automated accessibility rule violation.").slice(0, 500), {
       viewport, ruleId, impact, helpUrl: String(violation.helpUrl ?? "").slice(0, 500),
       wcagTags: Array.isArray(violation.tags) ? violation.tags.filter((tag: unknown) => typeof tag === "string" && tag.startsWith("wcag")).slice(0, 12) : [],
@@ -373,8 +374,11 @@ async function inspectAtViewport(page: Page, context: BrowserContext, url: strin
       previous = previous.redirectedFrom();
     }
   }
-  if (page.url() !== "about:blank") await page.waitForTimeout(1000).catch(() => undefined);
-  const snapshot = (page.url() !== "about:blank" ? await page.evaluate(`(${CHECK_PAGE})()`).catch((error) => {
+  // A failed load leaves Chrome's own error page (chrome-error://…), which must never be audited as the site.
+  const landed = /^https?:\/\//i.test(page.url());
+  if (!landed && !navigationError) navigationError = `The page did not load (the browser ended on ${page.url().split("/")[0] || "a blank page"}).`;
+  if (landed) await page.waitForTimeout(1000).catch(() => undefined);
+  const snapshot = (landed ? await page.evaluate(`(${CHECK_PAGE})()`).catch((error) => {
     snapshotError = error instanceof Error ? error.message.slice(0, 500) : "Page inspection failed.";
     return null;
   }) : null) as Record<string, any> | null;

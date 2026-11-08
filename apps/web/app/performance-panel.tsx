@@ -7,7 +7,7 @@ type Metric = { label: string; value: number | null; display: string | null; sco
 type FieldMetric = { label: string; p75: number; category: string };
 type Opportunity = { id: string; title: string; why: string; displayValue: string | null; savingsMs: number | null; savingsBytes: number | null; fix: string | null; manual: string | null; sources: Array<{ name: string; kind: string; bytes: number | null; ms: number | null }> };
 type Report = { id: string; strategy: string; score: number | null; metrics: Record<string, Metric>; field: { scope: string; overall: string; metrics: Record<string, FieldMetric> } | null; opportunities: Opportunity[]; error: string | null; createdAt: string };
-type Measure = { id: string; title: string; description: string; enabled: boolean; verified: boolean | null; detail: string };
+type Measure = { id: string; title: string; description: string; group?: string; enabled: boolean; verified: boolean | null; detail: string };
 type Performance = {
   keyConfigured: boolean; running: boolean; mobile: Report | null; desktop: Report | null;
   history: Array<{ strategy: string; score: number; createdAt: string }>;
@@ -84,7 +84,8 @@ export function PerformancePanel({ websiteId, onNotice }: { websiteId: string; o
   const locked = Boolean(busy) || runActive;
   const pluginReady = data.supported;
   const recommended = [...new Set((report?.opportunities ?? []).map((item) => item.fix).filter((fix): fix is string => Boolean(fix) && !measures.get(fix!)?.enabled))];
-  const allOff = data.measures.filter((measure) => !measure.enabled).map((measure) => measure.id);
+  const speedMeasures = data.measures.filter((measure) => (measure.group ?? "speed") === "speed");
+  const allOff = speedMeasures.filter((measure) => !measure.enabled).map((measure) => measure.id);
   const titleOf = (id: string) => measures.get(id)?.title ?? id;
   const fixDialog = (ids: string[]) => ({
     title: ids.length === 1 ? `Turn on ${titleOf(ids[0])}?` : `Apply ${ids.length} speed fixes?`,
@@ -203,7 +204,7 @@ export function PerformancePanel({ websiteId, onNotice }: { websiteId: string; o
           </div>
         )}
         <div className="measure-list">
-          {data.measures.map((measure) => (
+          {speedMeasures.map((measure) => (
             <div className="measure-row" key={measure.id}>
               <div className="measure-text">
                 <div className="measure-title"><strong>{measure.title}</strong><span className={`pill pill-${!measure.enabled ? "off" : measure.verified === false ? "warn" : "on"}`}>{!measure.enabled ? "Off" : measure.verified === false ? "Not effective here" : measure.verified ? "On · verified" : "On"}</span></div>
@@ -219,5 +220,95 @@ export function PerformancePanel({ websiteId, onNotice }: { websiteId: string; o
         </div>
       </section>
     </div>
+  );
+}
+
+/**
+ * Automatic accessibility fixes (plugin 0.9.0+). They share the speed-fix switch on
+ * the site: applied to each page as it is sent, health-checked, and reversible.
+ */
+export function AccessibilityFixes({ websiteId, onNotice }: { websiteId: string; onNotice: (message: string) => void }) {
+  const dialogs = useConfirm();
+  const [data, setData] = useState<Performance | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const load = useCallback(async () => {
+    const response = await fetch(`/api/sites/${websiteId}/performance`, { cache: "no-store" }).catch(() => null);
+    const body = response?.ok ? await response.json() as Performance : null;
+    if (body) setData(body);
+    return body;
+  }, [websiteId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      const current = await load();
+      if (cancelled) return;
+      const active = current?.run && ["approved", "executing"].includes(current.run.status);
+      timer.current = setTimeout(tick, active ? 5_000 : 60_000);
+    };
+    void tick();
+    return () => { cancelled = true; if (timer.current) clearTimeout(timer.current); };
+  }, [load]);
+
+  if (!data) return null;
+  const measures = data.measures.filter((measure) => measure.group === "accessibility");
+  if (!measures.length) return null;
+  const off = measures.filter((measure) => !measure.enabled);
+  const runActive = Boolean(data.run && ["approved", "executing"].includes(data.run.status));
+  const locked = Boolean(busy) || runActive || !data.supported;
+
+  async function change(key: string, changes: Array<{ measure: string; state: "on" | "off" }>, dialog: { title: string; body: string; confirmLabel: string; danger?: boolean }) {
+    if (!await dialogs.confirm(dialog)) return;
+    setBusy(key);
+    try {
+      const response = await fetch(`/api/sites/${websiteId}/performance`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "fix", changes }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "The request failed.");
+      onNotice(result.message ?? "Approved and sent to the site. It usually runs within a few seconds; the next daily browser check confirms the fix.");
+      await load();
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : "The request failed.");
+    } finally {
+      setBusy(null);
+    }
+  }
+  const turnOn = (ids: Measure[]) => ({
+    title: ids.length === 1 ? `Turn on ${ids[0].title}?` : `Turn on ${ids.length} accessibility fixes?`,
+    body: `${ids.map((measure) => `${measure.title}: ${measure.description}`).join("\n\n")}\n\nThese are added to each page as it is sent to visitors; theme and plugin files are not edited. The home page is checked afterwards and each fix can be switched off here.`,
+    confirmLabel: "Turn on",
+  });
+
+  return (
+    <section className="detail-content tab-section">
+      <div className="tab-section-head">
+        <div>
+          <h3>Automatic accessibility fixes</h3>
+          <p className="lead">Fix missing link, button and form-field names and blocked zooming without editing the theme. Colour contrast and small tap targets are design changes: open a finding to see the exact elements.</p>
+        </div>
+        {data.supported && off.length > 0 && (
+          <button className="button primary" disabled={locked} onClick={() => change("all", off.map((measure) => ({ measure: measure.id, state: "on" })), turnOn(off))}>
+            {busy === "all" ? "Approving…" : `Turn on all accessibility fixes (${off.length})`}
+          </button>
+        )}
+      </div>
+      <div className="measure-list">
+        {measures.map((measure) => (
+          <div className="measure-row" key={measure.id}>
+            <div className="measure-text">
+              <div className="measure-title"><strong>{measure.title}</strong><span className={`pill pill-${measure.enabled ? "on" : "off"}`}>{measure.enabled ? "On" : "Off"}</span></div>
+              <p>{measure.description}</p>
+            </div>
+            <button className={`button measure-toggle ${measure.enabled ? "is-on" : ""}`} disabled={locked}
+              onClick={() => change(measure.id, [{ measure: measure.id, state: measure.enabled ? "off" : "on" }], measure.enabled
+                ? { title: `Turn off ${measure.title}?`, body: "Pages go back to how the theme sends them.", confirmLabel: "Turn off", danger: true }
+                : turnOn([measure]))}>
+              {busy === measure.id ? "Approving…" : measure.enabled ? "Turn off" : "Turn on"}
+            </button>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }

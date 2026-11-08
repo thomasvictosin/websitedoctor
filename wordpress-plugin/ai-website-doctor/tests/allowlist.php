@@ -488,4 +488,49 @@ foreach ($inert_cases as $name => $case) {
 }
 rmdir($inert_dir);
 
+
+// Accessibility fixes rewrite only nameless controls, never scripts, and allow zooming.
+if (!function_exists('home_url')) { function home_url(string $path = ''): string { return 'https://example.com' . $path; } }
+if (!function_exists('esc_attr')) { function esc_attr(string $value): string { return htmlspecialchars($value, ENT_QUOTES); } }
+if (!function_exists('wp_strip_all_tags')) { function wp_strip_all_tags(string $value): string { return strip_tags($value); } }
+$page = '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"></head><body>'
+    . '<a href="https://www.facebook.com/brand"><i class="fab fa-facebook-f"></i></a>'
+    . '<a href="https://example.com/about-us/"><svg></svg></a>'
+    . '<a href="https://example.com/contact/">Contact us</a>'
+    . '<a href="#"><span class="dot"></span></a>'
+    . '<a class="menu-item-link" href="https://other.example/x"><span></span></a>'
+    . '<button class="navbar-toggle"><span class="icon-bar"></span></button>'
+    . '<button><i class="fa fa-search"></i></button>'
+    . '<button aria-label="Close dialog"><i class="fa fa-times"></i></button>'
+    . '<a href="mailto:hi@example.com"><img src="m.png" alt="Mail us"></a>'
+    . '<script>var t = "<a href=\"https://twitter.com/x\"><i></i></a>";</script>'
+    . '<form><input type="email" name="form_fields[email]" placeholder="Your email"><label for="n">Name</label><input id="n" name="name">'
+    . '<label>Phone <input name="phone"></label><input type="hidden" name="token"><select name="country_code"></select><input type="submit" value="Send"></form>'
+    . '</body></html>';
+$all = array('a11y_zoom' => true, 'a11y_names' => true, 'a11y_form_labels' => true);
+$fixed = awd_a11y_filter_html($page, $all);
+foreach (array(
+    '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    '<a aria-label="Facebook" href="https://www.facebook.com/brand">',
+    '<a aria-label="About us" href="https://example.com/about-us/">',
+    '<a href="https://example.com/contact/">Contact us</a>',
+    '<button aria-label="Menu" class="navbar-toggle">',
+    '<button aria-label="Search"><i class="fa fa-search"></i></button>',
+    '<button aria-label="Close dialog">',
+    '<a href="mailto:hi@example.com"><img',
+    '<script>var t = "<a href=\"https://twitter.com/x\"><i></i></a>";</script>',
+    '<input aria-label="Your email" type="email"',
+    '<input id="n" name="name">',
+    '<label>Phone <input name="phone"></label>',
+    '<input type="hidden" name="token">',
+    '<select aria-label="Country code" name="country_code">',
+    '<input type="submit" value="Send">',
+    '<a href="#"><span class="dot"></span></a>',
+    '<a class="menu-item-link" href="https://other.example/x"><span></span></a>',
+) as $expected) {
+    if (strpos($fixed, $expected) === false) throw new RuntimeException('Accessibility fix missing or wrong: ' . $expected . "\n" . $fixed);
+}
+if (awd_a11y_filter_html('{"json":true}', $all) !== '{"json":true}') throw new RuntimeException('Non-HTML responses must pass through unchanged.');
+if (awd_a11y_filter_html($page, array()) !== $page) throw new RuntimeException('With every fix off the page must be unchanged.');
+
 echo "WordPress plugin tests passed.\n";

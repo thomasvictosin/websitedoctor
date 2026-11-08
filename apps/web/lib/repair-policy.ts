@@ -211,6 +211,21 @@ function manualRemediationGuidance(issueFingerprint: string, description: string
     "Reproduce with a cold and a warm browser load; compare the same page and viewport before changing caching, compression, media, or third-party integrations.",
     "Apply one change at a time in staging and repeat the browser scan. These browser samples are triage measurements, not field Core Web Vitals.",
   ];
+  if (fingerprint.startsWith("browser:accessibility-color-contrast:")) return [
+    "Open the finding's evidence: each listed element shows its text colour, background colour and measured contrast (for example \"contrast of 2.9 … expected 4.5:1\").",
+    "Darken the text colour or lighten the background until normal text reaches at least 4.5:1 and large text (24px, or 19px bold) at least 3:1. Change it where the colour is defined once: Elementor → Site Settings → Global Colors, the theme Customizer, or the block's style. That fixes every page that uses it.",
+    "This is a design change, so it is never made automatically. The next daily browser check confirms the fix.",
+  ];
+  if (fingerprint.startsWith("browser:accessibility-target-size:")) return [
+    "Open the finding's evidence to see the small links or icons (usually social icons, pagination dots or footer links).",
+    "Make each one at least 24×24 pixels, or leave at least 24 pixels between neighbouring targets: increase the icon size or padding in the widget's style settings, or the spacing between items.",
+    "This changes the layout, so it is never made automatically. The next daily browser check confirms the fix.",
+  ];
+  if (/browser:accessibility-(?:link-name|button-name|label|select-name|meta-viewport):|browser:missing-form-label:/.test(fingerprint)) return [
+    "Use the Fix button: AI Website Doctor 0.9.0+ adds the missing names and labels (or removes the zoom block) to every page as it is sent, without editing the theme. It can be switched off under Accessibility.",
+    "For a permanent fix in the source, add the text in the widget or block settings (for example the icon's \"Aria label\" or \"Title\" field in Elementor, or a label for the form field).",
+    "The next daily browser check confirms the finding is gone.",
+  ];
   if (/browser:(accessibility-|missing-image-alt|missing-form-label)/.test(fingerprint)) return [
     "Inspect the recorded axe-core rule and affected DOM nodes; verify the issue with keyboard and assistive-technology behavior.",
     "Update the owning block, theme template, or plugin markup (for example, provide meaningful image alternative text or an associated form label). Do not hide the affected element to silence the rule.",

@@ -16,14 +16,17 @@ type Json = Record<string, unknown>;
 const record = (value: unknown): Json => value && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
 
 export const PERFORMANCE_MEASURES = {
-  page_cache: { title: "Page caching", description: "Serves ready-made pages instead of building each one with PHP and database queries. Uses the cache plugin already on the site, or installs LiteSpeed Cache (LiteSpeed servers) or Cache Enabler from WordPress.org." },
-  compression: { title: "Text compression", description: "Compresses HTML, CSS and JavaScript (gzip/Brotli) so pages download 60–80% smaller. Works on Apache and LiteSpeed servers." },
-  browser_caching: { title: "Browser caching", description: "Lets returning visitors reuse images, CSS, JavaScript and fonts for up to a year instead of downloading them again." },
-  defer_scripts: { title: "Defer non-critical JavaScript", description: "Loads theme and plugin scripts after the page is shown (jQuery itself stays as it is). WordPress keeps any script whose order matters blocking, and the home page is checked afterwards." },
-  font_display_swap: { title: "Show text while fonts load", description: "Adds font-display: swap to Google Fonts and connects to the font server early, so text appears immediately." },
-  trim_extras: { title: "Remove unused WordPress extras", description: "Stops loading the emoji script, the embed script and dashicons for visitors who are not logged in." },
-  lazy_load: { title: "Lazy-load images and videos", description: "Makes sure images and embedded videos below the first screen load only when the visitor scrolls to them." },
-  webp_uploads: { title: "WebP for new uploads", description: "New JPEG and PNG uploads are saved as WebP (about 30% smaller). Existing images are not changed." },
+  page_cache: { title: "Page caching", description: "Serves ready-made pages instead of building each one with PHP and database queries. Uses the cache plugin already on the site, or installs LiteSpeed Cache (LiteSpeed servers) or Cache Enabler from WordPress.org.", group: "speed" },
+  compression: { title: "Text compression", description: "Compresses HTML, CSS and JavaScript (gzip/Brotli) so pages download 60–80% smaller. Works on Apache and LiteSpeed servers.", group: "speed" },
+  browser_caching: { title: "Browser caching", description: "Lets returning visitors reuse images, CSS, JavaScript and fonts for up to a year instead of downloading them again.", group: "speed" },
+  defer_scripts: { title: "Defer non-critical JavaScript", description: "Loads theme and plugin scripts after the page is shown (jQuery itself stays as it is). WordPress keeps any script whose order matters blocking, and the home page is checked afterwards.", group: "speed" },
+  font_display_swap: { title: "Show text while fonts load", description: "Adds font-display: swap to Google Fonts and connects to the font server early, so text appears immediately.", group: "speed" },
+  trim_extras: { title: "Remove unused WordPress extras", description: "Stops loading the emoji script, the embed script and dashicons for visitors who are not logged in.", group: "speed" },
+  lazy_load: { title: "Lazy-load images and videos", description: "Makes sure images and embedded videos below the first screen load only when the visitor scrolls to them.", group: "speed" },
+  webp_uploads: { title: "WebP for new uploads", description: "New JPEG and PNG uploads are saved as WebP (about 30% smaller). Existing images are not changed.", group: "speed" },
+  a11y_zoom: { title: "Allow zooming on phones", description: "Removes the page setting that stops visitors from pinch-zooming, so people with low vision can enlarge text.", group: "accessibility" },
+  a11y_names: { title: "Name icon-only links and buttons", description: "Icon links and buttons (social icons, menu, search, close) get a spoken name for screen readers, taken from where they point or what the icon shows. Nothing visible changes.", group: "accessibility" },
+  a11y_form_labels: { title: "Label form fields", description: "Form fields without any label get one for screen readers, taken from their placeholder or field name. Nothing visible changes.", group: "accessibility" },
 } as const;
 export type PerformanceMeasure = keyof typeof PERFORMANCE_MEASURES;
 export const PERFORMANCE_MEASURE_IDS = Object.keys(PERFORMANCE_MEASURES) as PerformanceMeasure[];

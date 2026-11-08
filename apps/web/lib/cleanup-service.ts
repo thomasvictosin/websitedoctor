@@ -601,6 +601,9 @@ export const PERFORMANCE_MEASURE_TITLES: Record<string, string> = {
   trim_extras: "Remove unused WordPress extras",
   lazy_load: "Lazy-load images and videos",
   webp_uploads: "WebP for new uploads",
+  a11y_zoom: "Allow zooming on phones",
+  a11y_names: "Name icon-only links and buttons",
+  a11y_form_labels: "Label form fields",
 };
 
 /** Latest WordPress.org version of a plugin (for installing a cache plugin). */
@@ -621,6 +624,9 @@ export async function startPerformanceChange(input: { websiteId: string; organiz
   if (!agent || agent.lastSeenAt.getTime() < Date.now() - 15 * 60_000) throw new CleanupError("The WordPress plugin must be connected and online to change performance settings.", 409);
   const version = String(record(record(agent.diagnostics).site).pluginVersion ?? "0");
   if (compareVersions(version, "0.8.0") < 0) throw new CleanupError(`Performance fixes need AI Website Doctor 0.8.0 or later on the site (it reports ${version}).`, 409);
+  if (input.changes.some(({ measure }) => measure.startsWith("a11y_")) && compareVersions(version, "0.9.0") < 0) {
+    throw new CleanupError(`Accessibility fixes need AI Website Doctor 0.9.0 or later on the site (it reports ${version}). Upload the new plugin zip with "Replace current with uploaded".`, 409);
+  }
   const performance = record(record(agent.diagnostics).performance);
   const steps: CleanupStep[] = [];
   for (const { measure, state } of input.changes) {

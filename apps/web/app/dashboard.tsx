@@ -10,7 +10,7 @@ import { CloudflarePanel, ProtectionManager } from "./protection-manager";
 import { RepairCentre, type LegacyRepairRow } from "./repair-centre";
 import { McpAccessManager } from "./mcp-access-manager";
 import { IntegrationsSettings } from "./integrations-settings";
-import { PerformancePanel } from "./performance-panel";
+import { AccessibilityFixes, PerformancePanel } from "./performance-panel";
 import { RenewalsPanel, UpcomingRenewals } from "./renewals-panel";
 import { PackageUploadDialog, SoftwarePanel, type UploadTarget } from "./software-panel";
 import { parseAssistantRepairPermissionCommand } from "@/lib/repair-assistant-intent";
@@ -874,6 +874,21 @@ export default function Home() {
     }
     if (/^wp:(?:plugin|theme)-update:/.test(issue.fingerprint) && uploadTargetFor(issue)) return { label: "Upload new version", confirm: null, action: "upload" as const };
     if (issue.fingerprint.startsWith("perf:")) return { label: "See speed fixes", confirm: null, action: "performance" as const };
+    // Accessibility findings the plugin can fix on every page as it is sent (0.9.0+).
+    const a11yMeasure = /^browser:accessibility-meta-viewport:/.test(issue.fingerprint) ? "a11y_zoom"
+      : /^browser:accessibility-(?:link-name|button-name):/.test(issue.fingerprint) ? "a11y_names"
+      : /^browser:(?:accessibility-(?:label|select-name):|missing-form-label:)/.test(issue.fingerprint) ? "a11y_form_labels" : null;
+    if (a11yMeasure) return {
+      label: a11yMeasure === "a11y_zoom" ? "Fix: allow zooming" : a11yMeasure === "a11y_names" ? "Fix: name icon links" : "Fix: label form fields",
+      confirm: a11yMeasure === "a11y_zoom"
+        ? "Allow visitors to pinch-zoom on every page? The plugin removes the zoom block from the page header as pages are sent; theme files are not edited and you can switch it off under Accessibility."
+        : a11yMeasure === "a11y_names"
+          ? "Give icon-only links and buttons a spoken name on every page? Names come from where the link points (Facebook, email, a page of this site) or the icon (menu, search, close). Nothing visible changes and theme files are not edited."
+          : "Give unlabeled form fields a spoken label on every page? The label comes from the field's placeholder or name. Nothing visible changes and theme files are not edited.",
+      action: "a11y" as const,
+      measure: a11yMeasure,
+    };
+    if (/^browser:(?:accessibility-|missing-image-alt:)/.test(issue.fingerprint)) return { label: "How to fix", confirm: null, action: "accessibility" as const };
     if (issue.fingerprint.startsWith("renewal:")) return { label: "Open renewals", confirm: null, action: "renewals" as const };
     if (/^(?:wp:)?(?:security|integrity):/.test(issue.fingerprint)) return { label: "Fix: open cleanup", confirm: null };
     return null;
@@ -928,6 +943,14 @@ export default function Home() {
     if (!fix) return;
     if ("action" in fix && fix.action === "upload") { const target = uploadTargetFor(issue); if (target) setUploadTarget(target); return; }
     if ("action" in fix && fix.action === "performance") { openWebsiteDetail(issue.website.id, "performance"); return; }
+    if ("action" in fix && fix.action === "accessibility") { openWebsiteDetail(issue.website.id, "accessibility"); return; }
+    if ("action" in fix && fix.action === "a11y" && "measure" in fix) {
+      if (!await dialogs.confirm({ title: fix.label.replace(/^Fix: /, "").replace(/^./, (letter) => letter.toUpperCase()) + "?", body: fix.confirm ?? "", confirmLabel: "Turn on" })) return;
+      const response = await fetch(`/api/sites/${issue.website.id}/performance`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "fix", changes: [{ measure: fix.measure, state: "on" }] }) });
+      const result = await response.json().catch(() => ({}));
+      setMessage(response.ok ? "Approved and sent to the site. It usually runs within a few seconds; the next daily browser check confirms the finding is gone." : result.error ?? "The fix could not be started.");
+      return;
+    }
     if ("action" in fix && fix.action === "renewals") { openWebsiteDetail(issue.website.id, "renewals"); return; }
     if (!fix.confirm) {
       openWebsiteDetail(issue.website.id, "cleanup");
@@ -1919,10 +1942,10 @@ function WebsiteDetail({
     </details></>;
   }
   if (tab === "accessibility" || tab === "responsive") {
-    return <div className="detail-content">
+    return <>{tab === "accessibility" && <AccessibilityFixes websiteId={site.id} onNotice={onNotice} />}<div className="detail-content">
       {(() => {
         const selected = browserIssues.filter((issue) => tab === "accessibility"
-          ? issue.title.toLowerCase().includes("accessibility") || issue.title.toLowerCase().includes("alt text") || issue.title.toLowerCase().includes("label") || issue.title.toLowerCase().includes("contrast") || String(browserFinding(issue).fingerprint ?? "").startsWith("accessibility-")
+          ? /^browser:(?:accessibility-|missing-image-alt:|missing-form-label:)/.test(issue.fingerprint) || issue.title.toLowerCase().includes("accessibility")
           : issue.title.toLowerCase().includes("overflow") || issue.title.toLowerCase().includes("navigation") || issue.title.toLowerCase().includes("mobile") || issue.toolIds.some((id) => id.includes("browser")));
         return <>
           <h3>{tab === "accessibility" ? "Automated accessibility findings" : "Responsive browser findings"}</h3>
@@ -1930,7 +1953,7 @@ function WebsiteDetail({
           <p className="diagnostic-limit">{tab === "accessibility" ? "axe-core automated rule results are not a complete accessibility audit or WCAG conformance claim; manual review is still needed." : "Responsive observations reflect tested viewports and discovered pages within crawl limits; they do not guarantee every device layout."}</p>
         </>;
       })()}
-    </div>;
+    </div></>;
   }
   if (tab === "history") {
     return <div className="detail-content">

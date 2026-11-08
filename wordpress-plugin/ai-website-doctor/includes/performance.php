@@ -38,7 +38,7 @@ function awd_performance_measures(): array
         'trim_extras' => array('title' => 'Remove unused WordPress extras', 'description' => 'No emoji script, embed script or dashicons for visitors who are not logged in.'),
         'lazy_load' => array('title' => 'Lazy-load images and videos', 'description' => 'Images and embedded videos below the first screen load when scrolled to.'),
         'webp_uploads' => array('title' => 'WebP for new uploads', 'description' => 'New JPEG and PNG uploads are saved as WebP (existing images are unchanged).'),
-    );
+    ) + (function_exists('awd_a11y_measures') ? awd_a11y_measures() : array());
 }
 
 function awd_performance_state(): array
@@ -247,7 +247,20 @@ function awd_render_performance_section(): void
     $off = function_exists('awd_enable_all_counts') ? awd_enable_all_counts()['speed'] : 0;
     if ($off > 0) awd_render_enable_all_button('speed', sprintf('Turn on all speed fixes (%d)', $off));
     echo '<table class="widefat striped"><tbody>';
+    awd_render_performance_rows($state, 'speed');
+    echo '</tbody></table></div>';
+    $off = function_exists('awd_enable_all_counts') ? awd_enable_all_counts()['accessibility'] : 0;
+    echo '<div class="awd-card"><h2>Accessibility</h2><p>Fixes added to each page as it is sent to visitors; theme and plugin files are not edited and nothing visible changes. Colour contrast and small tap targets are design changes and are not fixed automatically.</p>';
+    if ($off > 0) awd_render_enable_all_button('accessibility', sprintf('Turn on all accessibility fixes (%d)', $off));
+    echo '<table class="widefat striped"><tbody>';
+    awd_render_performance_rows($state, 'accessibility');
+    echo '</tbody></table></div>';
+}
+
+function awd_render_performance_rows(array $state, string $group): void
+{
     foreach (awd_performance_measures() as $id => $measure) {
+        if (($measure['group'] ?? 'speed') !== $group) continue;
         $entry = (array) ($state[$id] ?? array());
         $on = !empty($entry['enabled']);
         $status = !$on ? 'Off' : ((($entry['verified'] ?? null) === false) ? 'On, not effective' : 'On');
@@ -255,7 +268,6 @@ function awd_render_performance_section(): void
         wp_nonce_field('awd_performance');
         echo '<input type="hidden" name="action" value="awd_performance"><input type="hidden" name="measure" value="' . esc_attr($id) . '"><input type="hidden" name="state" value="' . ($on ? 'off' : 'on') . '"><button class="button' . ($on ? '' : ' button-primary') . '">' . ($on ? 'Turn off' : 'Turn on') . '</button></form></td></tr>';
     }
-    echo '</tbody></table></div>';
 }
 
 // ---- Runtime measures -------------------------------------------------------

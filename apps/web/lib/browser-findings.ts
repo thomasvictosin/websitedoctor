@@ -61,7 +61,7 @@ export function groupSiteWideFindings<T extends GroupableFinding>(findings: T[])
       ...worst,
       fingerprint: `browser:${kind}:${SITE_WIDE_SUFFIX}`,
       title: pages.length > 1 ? `${worst.title} (${pages.length} pages)`.slice(0, 300) : worst.title,
-      description: [worst.description, where].filter(Boolean).join("\n\n").slice(0, 4000),
+      description: [worst.description, where].filter(Boolean).join("\n").slice(0, 4000),
       evidence: {
         ...worst.evidence,
         pageUrl: pages[0] ?? worst.evidence.pageUrl,

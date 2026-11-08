@@ -61,7 +61,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ site
 
 const actionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("test") }).strict(),
-  z.object({ action: z.literal("fix"), changes: z.array(z.object({ measure: z.enum(Object.keys(PERFORMANCE_MEASURE_TITLES) as [string, ...string[]]), state: z.enum(["on", "off"]) }).strict()).min(1).max(8) }).strict(),
+  z.object({ action: z.literal("fix"), changes: z.array(z.object({ measure: z.enum(Object.keys(PERFORMANCE_MEASURE_TITLES) as [string, ...string[]]), state: z.enum(["on", "off"]) }).strict()).min(1).max(11) }).strict(),
 ]);
 
 /** test: run PageSpeed for mobile and desktop in the background. fix: apply or undo speed measures on the site. */

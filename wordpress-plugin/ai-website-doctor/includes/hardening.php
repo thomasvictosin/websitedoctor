@@ -377,8 +377,10 @@ function awd_enable_all(string $scope): array
             else $failed[] = $measure['title'] . ' (' . (string) ($result['message'] ?? 'not applied') . ')';
         }
     }
-    if (($scope === 'all' || $scope === 'speed') && function_exists('awd_performance_measures')) {
+    if (($scope === 'all' || $scope === 'speed' || $scope === 'accessibility') && function_exists('awd_performance_measures')) {
         foreach (awd_performance_measures() as $id => $measure) {
+            $group = (string) ($measure['group'] ?? 'speed');
+            if ($scope !== 'all' && $scope !== $group) continue;
             if (awd_performance_enabled($id)) continue;
             // Page caching needs a cache plugin; the app installs one (Speed tab), so skip it here when none is active.
             if ($id === 'page_cache' && function_exists('awd_performance_cache_plugins') && !awd_performance_cache_plugins()) {
@@ -401,7 +403,7 @@ function awd_enable_all_from_admin(): void
     if (!current_user_can('manage_options')) wp_die(esc_html__('You are not allowed to change protection settings.', 'ai-website-doctor'), 403);
     check_admin_referer('awd_enable_all');
     $scope = isset($_POST['scope']) ? sanitize_key(wp_unslash($_POST['scope'])) : '';
-    if (!in_array($scope, array('all', 'protection', 'speed'), true)) wp_die('Unknown scope.', 400);
+    if (!in_array($scope, array('all', 'protection', 'speed', 'accessibility'), true)) wp_die('Unknown scope.', 400);
     $result = awd_enable_all($scope);
     $GLOBALS['awd_force_integrity_scan'] = true;
     awd_send_diagnostics();
@@ -414,8 +416,15 @@ function awd_enable_all_counts(): array
     $protection = 0;
     foreach (array_keys(awd_hardening_measures()) as $id) if (!awd_hardening_enabled($id)) $protection++;
     $speed = 0;
-    if (function_exists('awd_performance_measures')) foreach (array_keys(awd_performance_measures()) as $id) if (!awd_performance_enabled($id)) $speed++;
-    return array('protection' => $protection, 'speed' => $speed);
+    $accessibility = 0;
+    if (function_exists('awd_performance_measures')) {
+        foreach (awd_performance_measures() as $id => $measure) {
+            if (awd_performance_enabled($id)) continue;
+            if (($measure['group'] ?? 'speed') === 'accessibility') $accessibility++;
+            else $speed++;
+        }
+    }
+    return array('protection' => $protection, 'speed' => $speed, 'accessibility' => $accessibility);
 }
 
 function awd_render_enable_all_button(string $scope, string $label): void
@@ -429,14 +438,14 @@ function awd_render_enable_all_button(string $scope, string $label): void
 function awd_render_enable_all_card(): void
 {
     $counts = awd_enable_all_counts();
-    $total = $counts['protection'] + $counts['speed'];
+    $total = $counts['protection'] + $counts['speed'] + $counts['accessibility'];
     echo '<div class="awd-card"><h2>Turn everything on</h2>';
     if ($total === 0) {
-        echo '<p>All protection measures and speed fixes are on.</p></div>';
+        echo '<p>All protection, speed and accessibility fixes are on.</p></div>';
         return;
     }
-    echo '<p>' . esc_html(sprintf('%d protection measure(s) and %d speed fix(es) are off. One click turns them all on. Each is tested on this server exactly like its own button, and anything that breaks the home page is switched back off automatically.', $counts['protection'], $counts['speed'])) . '</p>';
-    awd_render_enable_all_button('all', sprintf('Turn on all protection and speed fixes (%d)', $total));
+    echo '<p>' . esc_html(sprintf('%d protection measure(s), %d speed fix(es) and %d accessibility fix(es) are off. One click turns them all on. Each is tested on this server exactly like its own button, and anything that breaks the home page is switched back off automatically.', $counts['protection'], $counts['speed'], $counts['accessibility'])) . '</p>';
+    awd_render_enable_all_button('all', sprintf('Turn on everything (%d)', $total));
     echo '</div>';
 }
 

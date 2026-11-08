@@ -33,7 +33,7 @@ export const CLEANUP_OPERATIONS = [
   "set_performance",
   "install_package",
 ] as const;
-export const PERFORMANCE_MEASURE_IDS = ["page_cache", "compression", "browser_caching", "defer_scripts", "font_display_swap", "trim_extras", "lazy_load", "webp_uploads"];
+export const PERFORMANCE_MEASURE_IDS = ["page_cache", "compression", "browser_caching", "defer_scripts", "font_display_swap", "trim_extras", "lazy_load", "webp_uploads", "a11y_zoom", "a11y_names", "a11y_form_labels"];
 export type CleanupOperation = typeof CLEANUP_OPERATIONS[number];
 export const MIN_CLEANUP_PLUGIN_VERSION = "0.3.0";
 export const MAX_CLEANUP_STEPS = 120;
