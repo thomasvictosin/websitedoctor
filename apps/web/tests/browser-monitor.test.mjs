@@ -66,7 +66,11 @@ test("real browser scan detects layout, accessibility, navigation, runtime, and 
     assert.ok(result.pages.some((page) => page.url === "https://fixture.example/secondary"));
     assert.ok(result.pages.every((page) => page.complete));
     assert.equal(result.pages.some((page) => /other\.example|search\?/.test(page.url)), false);
-    assert.equal(result.findings.filter(({ fingerprint }) => fingerprint.startsWith("browser:missing-image-alt:")).length, 2);
+    // Both pages miss alt text; that is one site-wide issue listing both pages, not two issues.
+    const missingAlt = result.findings.filter(({ fingerprint }) => fingerprint.startsWith("browser:missing-image-alt:"));
+    assert.equal(missingAlt.length, 1);
+    assert.equal(missingAlt[0].fingerprint, "browser:missing-image-alt:site");
+    assert.equal(missingAlt[0].evidence.pageCount, 2);
     assert.equal(result.pageLimitReached, false);
     assert.equal(requestedHosts.includes("169.254.169.254"), false, "private metadata destinations must never reach the fetcher");
   } catch (error) {

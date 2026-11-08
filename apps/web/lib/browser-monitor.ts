@@ -6,6 +6,7 @@ import { dirname, resolve } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page, type Route } from "playwright";
 import { assertSafeTarget, isPublicAddress, pinnedLookup, resolvePublicAddresses } from "./monitor.ts";
 import { redactApiValue } from "./redaction.ts";
+import { groupSiteWideFindings } from "./browser-findings.ts";
 
 export type BrowserFinding = {
   fingerprint: string;
@@ -694,7 +695,7 @@ export async function scanBrowserSite(rawUrl: string, injected?: Partial<Browser
       pageLimitReached = pages.length >= MAX_PAGES;
     }
     await context.close();
-    const deduplicated = [...new Map(findings.map((item) => [item.fingerprint, item])).values()];
+    const deduplicated = groupSiteWideFindings([...new Map(findings.map((item) => [item.fingerprint, item])).values()]);
     const completePageCount = pages.filter((page) => page.complete).length;
     const status = deduplicated.length ? "issues_found" : completePageCount === 0 ? "unavailable" : crawlIncomplete || errors.length ? "partial" : "passed";
     const percentileSummary = (values: number[]) => {
@@ -715,7 +716,7 @@ export async function scanBrowserSite(rawUrl: string, injected?: Partial<Browser
   } catch (error) {
     const reason = error instanceof Error ? error.message : "Browser scan is unavailable.";
     errors.push(reason.slice(0, 500));
-    return { status: "unavailable", scannedUrl, checkedAt: started.toISOString(), viewports: VIEWPORTS, pages, pageLimit: MAX_PAGES, pageLimitReached, crawlIncomplete, findings, metrics: { processedPages: pages.length, completePages: pages.filter((page) => page.complete).length, viewportSamples: 0, resourceCount: 0, failedRequestCount: 0, transferSizeBytes: 0, viewportMetricSummary: {} }, errors };
+    return { status: "unavailable", scannedUrl, checkedAt: started.toISOString(), viewports: VIEWPORTS, pages, pageLimit: MAX_PAGES, pageLimitReached, crawlIncomplete, findings: groupSiteWideFindings(findings), metrics: { processedPages: pages.length, completePages: pages.filter((page) => page.complete).length, viewportSamples: 0, resourceCount: 0, failedRequestCount: 0, transferSizeBytes: 0, viewportMetricSummary: {} }, errors };
   } finally {
     await browser?.close().catch(() => undefined);
   }

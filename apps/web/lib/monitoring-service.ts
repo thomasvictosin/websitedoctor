@@ -1,6 +1,7 @@
 import { db } from "./db.ts";
 import type { Prisma } from "@prisma/client";
 import type { scanBrowserSite } from "./browser-monitor.ts";
+import { isLegacyPerPageFingerprint, SITE_WIDE_SUFFIX } from "./browser-findings.ts";
 import { checkWebsite } from "./monitor.ts";
 import { proposeStandingEligibleRepair } from "./repair-authorization.ts";
 import { runSecurityProbe, type SecurityProbeResult } from "./security-probe.ts";
@@ -218,17 +219,32 @@ export async function runAndStoreCheck(
           });
         }
       }
+      // Before site-wide grouping, every page had its own copy of rules such as
+      // contrast or console errors. Those copies are now covered by one grouped issue.
+      const legacy = await db.issue.findMany({
+        where: { websiteId: website.id, source: "browser_monitor", fingerprint: { startsWith: "browser:" }, repairs: { none: {} } },
+        select: { id: true, fingerprint: true },
+      });
+      const legacyIds = legacy.filter((issue) => isLegacyPerPageFingerprint(issue.fingerprint)).map((issue) => issue.id);
+      if (legacyIds.length) await db.issue.deleteMany({ where: { id: { in: legacyIds }, websiteId: website.id } });
       const scannedPageKeys = new Set(browser.pages.filter((page) => page.complete).map((page) => page.pageKey));
       if (scannedPageKeys.size > 0) {
         const existingFindings = await db.issue.findMany({
           where: { websiteId: website.id, source: "browser_monitor", status: "open", fingerprint: { startsWith: "browser:" } },
-          select: { id: true, fingerprint: true },
+          select: { id: true, fingerprint: true, evidence: true },
         });
         const observedFingerprints = new Set(browser.findings.map((finding) => finding.fingerprint));
         const resolvedIds = existingFindings
           .filter((issue) => {
+            if (observedFingerprints.has(issue.fingerprint)) return false;
             const pageKey = issue.fingerprint.split(":").at(-1);
-            return pageKey && scannedPageKeys.has(pageKey) && !observedFingerprints.has(issue.fingerprint);
+            // A site-wide issue is fixed once every page it was seen on was rescanned without it.
+            if (pageKey === SITE_WIDE_SUFFIX) {
+              const evidence = issue.evidence as { browser?: { finding?: { pageKeys?: unknown } } } | null;
+              const keys = evidence?.browser?.finding?.pageKeys;
+              return Array.isArray(keys) && keys.length > 0 && keys.every((key) => typeof key === "string" && scannedPageKeys.has(key));
+            }
+            return Boolean(pageKey) && scannedPageKeys.has(pageKey!);
           })
           .map((issue) => issue.id);
         if (resolvedIds.length) {
