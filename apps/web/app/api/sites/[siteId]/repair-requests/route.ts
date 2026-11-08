@@ -48,7 +48,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ sit
     intent = { requestKind: /\b(diagnos|scan|check|inspect|what|why)\b/i.test(parsed.data.prompt) && !/\b(fix|repair|resolve|correct|change)\b/i.test(parsed.data.prompt) ? "diagnose" : /\b(recommend|suggest|how do i|what should)\b/i.test(parsed.data.prompt) ? "recommend" : "repair_one", issueIds: [parsed.data.issueId], scopePage: null, requestedOutcome: parsed.data.prompt };
   } else {
     try {
-      intent = await getAiEngine().interpretRepairRequest(parsed.data.prompt, { website: { name: website.name, url: website.url }, issues: evidenceIssues, pages: pageList });
+      intent = await getAiEngine(website.organizationId).interpretRepairRequest(parsed.data.prompt, { website: { name: website.name, url: website.url }, issues: evidenceIssues, pages: pageList });
     } catch {
       interpretationMode = "deterministic_fallback";
       const promptTokens = tokens(parsed.data.prompt);
@@ -57,7 +57,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ sit
       const bulk = /\b(all|every|routine|maintenance|across|throughout)\b/i.test(parsed.data.prompt);
       const tied = ranked.length > 1 && ranked[0].score === ranked[1].score;
       if ((!ranked.length || (tied && !bulk)) && !/\b(diagnos|scan|check|inspect)\b/i.test(parsed.data.prompt)) {
-        return NextResponse.json({ status: "needs_issue_selection", message: "Local AI could not interpret the request safely. Select the issue or run diagnosis; no repair was created.", candidates: ranked.slice(0, 8).map(({ candidate }) => ({ id: candidate.id, title: candidate.title, severity: candidate.severity })) }, { status: 200, headers: { "cache-control": "no-store" } });
+        return NextResponse.json({ status: "needs_issue_selection", message: "The AI could not interpret the request safely. Select the issue or run diagnosis; no repair was created.", candidates: ranked.slice(0, 8).map(({ candidate }) => ({ id: candidate.id, title: candidate.title, severity: candidate.severity })) }, { status: 200, headers: { "cache-control": "no-store" } });
       }
       const selected = bulk ? ranked.slice(0, 25).map(({ candidate }) => candidate) : ranked.slice(0, 1).map(({ candidate }) => candidate);
       intent = {

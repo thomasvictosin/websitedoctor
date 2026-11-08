@@ -60,7 +60,7 @@ export async function analyzeFindingWithEngine(
       aiError: null,
     };
   } catch (error) {
-    const aiError = error instanceof Error ? error.message : "Local AI analysis failed.";
+    const aiError = error instanceof Error ? error.message : "AI analysis failed.";
     return {
       diagnosis: null,
       severity: determineSeverity(input.finding.severity, undefined, input.source),

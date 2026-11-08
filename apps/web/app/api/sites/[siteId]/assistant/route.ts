@@ -40,6 +40,7 @@ export async function POST(
       id: true,
       name: true,
       url: true,
+      organizationId: true,
       checks: { orderBy: { checkedAt: "desc" }, take: 20 },
       issues: {
         orderBy: { lastSeenAt: "desc" },
@@ -97,11 +98,12 @@ export async function POST(
   });
 
   try {
-    const result = await getAiEngine().answerWebsiteQuestion(parsed.data.question, storedEvidence);
+    const result = await getAiEngine(website.organizationId).answerWebsiteQuestion(parsed.data.question, storedEvidence);
     return NextResponse.json(redactApiValue(result), { headers: { "cache-control": "no-store" } });
-  } catch {
+  } catch (error) {
+    const reason = error instanceof Error ? error.message.slice(0, 300) : "";
     return NextResponse.json({
-      error: "The local AI assistant is unavailable or returned an answer that failed evidence validation. No answer was accepted.",
+      error: `The AI assistant could not answer${reason ? `: ${reason}` : "."} No answer was accepted.${/Ollama|Local AI/.test(reason) ? " Add an Anthropic API key in Settings → Integrations to use Claude." : ""}`,
     }, { status: 503, headers: { "cache-control": "no-store" } });
   }
 }

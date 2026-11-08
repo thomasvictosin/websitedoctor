@@ -1,20 +1,22 @@
 import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { db } from "./db.ts";
+import { CLAUDE_MODELS, DEFAULT_CLAUDE_MODEL, isClaudeModel, type ClaudeModel } from "./ai/claude.ts";
 
 /**
  * Organization integrations the owner pastes into Settings instead of the
  * hosting dashboard: the Wordfence Intelligence key (known vulnerabilities),
  * the Google PageSpeed Insights key (Core Web Vitals and performance score),
- * and Resend (reminder and alert email). Keys are stored encrypted
+ * Resend (reminder and alert email) and Anthropic (the Claude model behind the
+ * assistant and AI diagnoses). Keys are stored encrypted
  * (AES-256-GCM, key derived from SESSION_SECRET) and never returned; the API
  * only reports whether each one is set. Environment variables still work and
  * take effect when nothing is stored.
  */
 
 const SETTING_KEY = "integrations";
-type Stored = { wordfenceKey?: string; pagespeedKey?: string; resendKey?: string; emailFrom?: string; reminderEmails?: string[]; updatedAt?: string };
-export type IntegrationSecrets = { wordfenceKey: string | null; pagespeedKey: string | null; resendKey: string | null; emailFrom: string | null; reminderEmails: string[] };
+type Stored = { wordfenceKey?: string; pagespeedKey?: string; resendKey?: string; anthropicKey?: string; aiModel?: string; emailFrom?: string; reminderEmails?: string[]; updatedAt?: string };
+export type IntegrationSecrets = { wordfenceKey: string | null; pagespeedKey: string | null; resendKey: string | null; anthropicKey: string | null; aiModel: ClaudeModel; emailFrom: string | null; reminderEmails: string[] };
 
 function key(): Buffer {
   const secret = process.env.SESSION_SECRET;
@@ -51,6 +53,8 @@ export async function getIntegrations(organizationId: string): Promise<Integrati
     wordfenceKey: openSecret(value.wordfenceKey) ?? process.env.WORDFENCE_INTELLIGENCE_API_KEY ?? null,
     pagespeedKey: openSecret(value.pagespeedKey) ?? process.env.PAGESPEED_API_KEY ?? null,
     resendKey: openSecret(value.resendKey) ?? process.env.RESEND_API_KEY ?? null,
+    anthropicKey: openSecret(value.anthropicKey) ?? process.env.ANTHROPIC_API_KEY ?? null,
+    aiModel: modelFrom(value),
     emailFrom: value.emailFrom ?? process.env.EMAIL_FROM ?? null,
     reminderEmails: Array.isArray(value.reminderEmails) ? value.reminderEmails : [],
   };
@@ -64,26 +68,47 @@ export async function integrationStatus(organizationId: string) {
   return {
     wordfence: { configured: Boolean(secrets.wordfenceKey), source: source(value.wordfenceKey, process.env.WORDFENCE_INTELLIGENCE_API_KEY) },
     pagespeed: { configured: Boolean(secrets.pagespeedKey), source: source(value.pagespeedKey, process.env.PAGESPEED_API_KEY) },
+    ai: { configured: Boolean(secrets.anthropicKey), source: source(value.anthropicKey, process.env.ANTHROPIC_API_KEY), model: secrets.aiModel, models: Object.entries(CLAUDE_MODELS).map(([id, model]) => ({ id, ...model })) },
     email: { configured: Boolean(secrets.resendKey), source: source(value.resendKey, process.env.RESEND_API_KEY), from: secrets.emailFrom, reminderEmails: secrets.reminderEmails },
   };
 }
 
-export type IntegrationUpdate = { wordfenceKey?: string | null; pagespeedKey?: string | null; resendKey?: string | null; emailFrom?: string | null; reminderEmails?: string[] };
+export type IntegrationUpdate = { wordfenceKey?: string | null; pagespeedKey?: string | null; resendKey?: string | null; anthropicKey?: string | null; aiModel?: ClaudeModel; emailFrom?: string | null; reminderEmails?: string[] };
 
 /** Set (string), clear (null) or keep (undefined) each value. */
 export async function saveIntegrations(organizationId: string, update: IntegrationUpdate) {
   const row = await storedRow(organizationId);
   const next: Stored = { ...((row?.value ?? {}) as Stored) };
-  for (const field of ["wordfenceKey", "pagespeedKey", "resendKey"] as const) {
+  for (const field of ["wordfenceKey", "pagespeedKey", "resendKey", "anthropicKey"] as const) {
     if (update[field] === null) delete next[field];
     else if (typeof update[field] === "string" && update[field]) next[field] = sealSecret(update[field]);
   }
   if (update.emailFrom === null) delete next.emailFrom;
   else if (typeof update.emailFrom === "string") next.emailFrom = update.emailFrom;
   if (update.reminderEmails) next.reminderEmails = update.reminderEmails;
+  if (update.aiModel) next.aiModel = update.aiModel;
   next.updatedAt = new Date().toISOString();
   if (row) await db.systemSetting.update({ where: { id: row.id }, data: { value: next as Prisma.InputJsonValue, isSecret: true } });
   else await db.systemSetting.create({ data: { organizationId, scope: "organization", scopeId: organizationId, key: SETTING_KEY, value: next as Prisma.InputJsonValue, isSecret: true } });
+}
+
+function modelFrom(value: Stored): ClaudeModel {
+  if (isClaudeModel(value.aiModel)) return value.aiModel;
+  return isClaudeModel(process.env.CLAUDE_MODEL) ? process.env.CLAUDE_MODEL : DEFAULT_CLAUDE_MODEL;
+}
+
+/** The Claude key and model for an organization; without one, the first organization that has a key (single-tenant installs). */
+export async function claudeSettings(organizationId?: string | null): Promise<{ apiKey: string; model: ClaudeModel } | null> {
+  if (organizationId) {
+    const own = await getIntegrations(organizationId);
+    return own.anthropicKey ? { apiKey: own.anthropicKey, model: own.aiModel } : null;
+  }
+  const rows = await db.systemSetting.findMany({ where: { scope: "organization", key: SETTING_KEY }, orderBy: { id: "asc" }, select: { value: true } });
+  for (const row of rows) {
+    const opened = openSecret((row.value as Stored).anthropicKey);
+    if (opened) return { apiKey: opened, model: modelFrom(row.value as Stored) };
+  }
+  return process.env.ANTHROPIC_API_KEY ? { apiKey: process.env.ANTHROPIC_API_KEY, model: modelFrom({}) } : null;
 }
 
 /** The first Wordfence key available in any organization (the vulnerability index is shared). */

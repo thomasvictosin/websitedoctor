@@ -373,7 +373,7 @@ export default function Home() {
         const queued = (result.results ?? []).filter((item: { status: string }) => item.status === "queued").length;
         const approval = (result.results ?? []).filter((item: { status: string }) => item.status === "requires_approval").length;
         const guidance = (result.results ?? []).filter((item: { status: string }) => item.status === "guidance_only").length;
-        setMessage(`${result.interpretationMode === "deterministic_fallback" ? "Local AI was unavailable; a conservative deterministic issue match was used. " : ""}${queued} queued, ${approval} awaiting your approval, ${guidance} guidance-only, ${(result.skipped ?? []).length} skipped.`);
+        setMessage(`${result.interpretationMode === "deterministic_fallback" ? "The AI was unavailable; a conservative rule-based issue match was used. " : ""}${queued} queued, ${approval} awaiting your approval, ${guidance} guidance-only, ${(result.skipped ?? []).length} skipped.`);
         if (targetSiteId === assistantWebsiteId) setAssistantMessages((current) => [...current, { role: "assistant", content: (result.results ?? []).map((item: { title: string; status: string; risk: string; repair?: { proposal?: { proposedChanges?: string[] } } }) => `${item.status} · ${item.risk} risk · ${item.title}: ${item.repair?.proposal?.proposedChanges?.join("; ") ?? "No executable operation; review guidance."}`).join("\n") || "No repair plan was produced." }]);
         if (requestText === repairPrompt) setRepairPrompt("");
         if (requestText === assistantQuestion) setAssistantQuestion("");
@@ -1368,7 +1368,7 @@ export default function Home() {
             ? "Everything the app can fix, what is running now, what waits for you, what runs automatically, and what happened."
             : activeView === "settings"
               ? "Connect the free services behind vulnerability checks, PageSpeed scores and email reminders."
-              : "Monitor availability, review evidence, and get local AI guidance — all from your own machine."}</p>
+              : "Monitor availability, review evidence, and get AI guidance from the evidence."}</p>
       </section>
 
       {activeView === "dashboard" && websites.filter((site) => compromiseFindings(site.id).length > 0).map((site) => (
@@ -1897,7 +1897,7 @@ function WebsiteDetail({
         {wp.diagnostics?.issues?.length ? <ul>{wp.diagnostics.issues.map((item, index) => <li key={`${item.title}-${index}`}>{item.severity}: {item.title}</li>)}</ul> : <p>No WordPress findings in the last synced diagnostics.</p>}
       </> : <p>WordPress agent is not connected. Plugin/theme diagnostics are unavailable.</p>}
       <h3>Browser findings</h3>
-      {browserIssues.length ? <ul>{browserIssues.map((issue) => <li key={issue.id}><strong>{issue.title}</strong> · {issue.severity} · {issue.diagnosis?.diagnosis?.affectedPage ?? "Page is not recorded"}</li>)}</ul> : <p>No browser findings are stored yet. Run a browser scan from the monitoring API or scheduled scan runner.</p>}
+      {browserIssues.length ? <ul>{browserIssues.map((issue) => <li key={issue.id}><strong>{issue.title}</strong> · {issue.severity} · {issue.diagnosis?.diagnosis?.affectedPage ?? "Page is not recorded"}</li>)}</ul> : <p>No browser findings are stored yet. The daily <p>No browser findings are stored yet. The daily &quot;Browser checks&quot; GitHub Actions workflow opens each site in a real browser; start it by hand from the repository&apos;s Actions tab to check now.</p>quot;Browser checks<p>No browser findings are stored yet. The daily &quot;Browser checks&quot; GitHub Actions workflow opens each site in a real browser; start it by hand from the repository&apos;s Actions tab to check now.</p>quot; GitHub Actions workflow opens each site in a real browser; start it by hand from the repository<p>No browser findings are stored yet. The daily &quot;Browser checks&quot; GitHub Actions workflow opens each site in a real browser; start it by hand from the repository&apos;s Actions tab to check now.</p>apos;s Actions tab to check now.</p>}
       <p className="diagnostic-limit">Broken-link checks confirm same-origin 404/410 destinations or missing in-page anchors; external and 401/403 links are excluded. Browser observations cover only pages reached within crawl bounds. Server logs and application-level failures are not inferred from browser evidence.</p>
     </div>;
   }
@@ -1925,7 +1925,7 @@ function WebsiteDetail({
           : issue.title.toLowerCase().includes("overflow") || issue.title.toLowerCase().includes("navigation") || issue.title.toLowerCase().includes("mobile") || issue.toolIds.some((id) => id.includes("browser")));
         return <>
           <h3>{tab === "accessibility" ? "Automated accessibility findings" : "Responsive browser findings"}</h3>
-          {selected.length ? <div className="issue-list">{selected.map((issue) => <article className="repair-card" key={issue.id}><div className="issue-heading"><span className={`severity severity-${issue.severity}`}>{issue.severity}</span><strong>{issue.title}</strong></div><p>{issue.description}</p><small>{issue.diagnosis?.diagnosis?.affectedPage ?? "Affected page not identified"}</small><details><summary>Observed evidence</summary><pre>{JSON.stringify(browserFinding(issue), null, 2)}</pre></details></article>)}</div> : <p>No matching browser findings are stored for this site yet.</p>}
+          {selected.length ? <div className="issue-list">{selected.map((issue) => <article className="repair-card" key={issue.id}><div className="issue-heading"><span className={`severity severity-${issue.severity}`}>{issue.severity}</span><strong>{issue.title}</strong></div><p>{issue.description}</p><small>{issue.diagnosis?.diagnosis?.affectedPage ?? "Affected page not identified"}</small><details><summary>Observed evidence</summary><pre>{JSON.stringify(browserFinding(issue), null, 2)}</pre></details></article>)}</div> : <p>No browser findings are stored for this site yet. These checks open the site in a real browser at desktop, tablet and phone widths once a day (the &quot;Browser checks&quot; GitHub Actions workflow); you can also start that workflow by hand.</p>}
           <p className="diagnostic-limit">{tab === "accessibility" ? "axe-core automated rule results are not a complete accessibility audit or WCAG conformance claim; manual review is still needed." : "Responsive observations reflect tested viewports and discovered pages within crawl limits; they do not guarantee every device layout."}</p>
         </>;
       })()}

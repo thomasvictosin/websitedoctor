@@ -270,7 +270,7 @@ export function createWebsiteDoctorMcpServer(principal: RequestPrincipal, origin
 
   tool("diagnose_issue", {
     title: "Store a diagnosis",
-    description: "Run the central app's diagnosis for an issue and store it on the issue. withAi=false (default) uses deterministic evidence rules. withAi=true calls the app's configured local AI provider, which is often unreachable from the hosted app; it then falls back to the deterministic diagnosis and reports aiStatus 'unavailable'.",
+    description: "Run the central app's diagnosis for an issue and store it on the issue. withAi=false (default) uses deterministic evidence rules. withAi=true calls the configured AI model (Claude when an Anthropic key is set in Settings → Integrations, otherwise a self-hosted Ollama server); if it is unavailable, the deterministic diagnosis is stored and aiStatus is 'unavailable'.",
     inputSchema: { issueId: z.string().min(1).max(64), withAi: z.boolean().default(false) },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ issueId, withAi }) => {

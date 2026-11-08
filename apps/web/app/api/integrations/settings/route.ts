@@ -3,7 +3,8 @@ import { z } from "zod";
 import { authorizeOwnerRequest } from "@/lib/auth-api";
 import { db } from "@/lib/db";
 import { sendEmail } from "@/lib/email";
-import { integrationStatus, saveIntegrations } from "@/lib/integrations";
+import { claudeSettings, integrationStatus, saveIntegrations } from "@/lib/integrations";
+import { ClaudeProvider, CLAUDE_MODELS } from "@/lib/ai/claude";
 import { readBoundedJson } from "@/lib/request-json";
 import { refreshAllVulnerabilities, vulnerabilityStatus } from "@/lib/vulnerabilities";
 
@@ -33,6 +34,8 @@ const updateSchema = z.object({
   wordfenceKey: secret,
   pagespeedKey: secret,
   resendKey: secret,
+  anthropicKey: secret,
+  aiModel: z.enum(Object.keys(CLAUDE_MODELS) as [keyof typeof CLAUDE_MODELS, ...Array<keyof typeof CLAUDE_MODELS>]).optional(),
   emailFrom: z.string().trim().max(200).regex(/^(?:[^<>@\n]{0,80}<)?[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+>?$/, "Use an address like Website Doctor <alerts@yourdomain.com>.").nullable().optional(),
   reminderEmails: z.array(z.string().trim().email().max(254)).max(10).optional(),
 }).strict();
@@ -48,17 +51,28 @@ export async function PUT(request: Request) {
   return NextResponse.json({ ...(await integrationStatus(org.organizationId)), vulnerabilities: await vulnerabilityStatus(), refreshing: typeof parsed.data.wordfenceKey === "string" });
 }
 
-/** Actions: send a test email, or refresh the vulnerability database now. */
+/** Actions: send a test email, ask Claude a test question, or refresh the vulnerability database now. */
 export async function POST(request: Request) {
   const org = await organization(request, true);
   if ("response" in org) return org.response;
-  const body = z.object({ action: z.enum(["test_email", "refresh_vulnerabilities"]) }).safeParse(await readBoundedJson(request, 1_000));
+  const body = z.object({ action: z.enum(["test_email", "test_ai", "refresh_vulnerabilities"]) }).safeParse(await readBoundedJson(request, 1_000));
   if (!body.success) return NextResponse.json({ error: "Unknown action." }, { status: 400 });
   if (body.data.action === "test_email") {
     const status = await integrationStatus(org.organizationId);
     const to = status.email.reminderEmails.length ? status.email.reminderEmails : [org.email];
     const result = await sendEmail(org.organizationId, { to, subject: "Website Doctor test email", text: "This is a test from Website Doctor. Renewal reminders and alerts will arrive like this." });
     return NextResponse.json(result.sent ? { message: `Test email sent to ${to.join(", ")}.` } : { error: result.reason }, { status: result.sent ? 200 : 400 });
+  }
+  if (body.data.action === "test_ai") {
+    const claude = await claudeSettings(org.organizationId);
+    if (!claude) return NextResponse.json({ error: "Paste an Anthropic API key first." }, { status: 400 });
+    try {
+      const reply = await new ClaudeProvider(claude.apiKey, claude.model).generateJson("Task: connection test. Return {\"ok\": true}.", {});
+      const ok = Boolean(reply && typeof reply === "object" && (reply as { ok?: unknown }).ok === true);
+      return NextResponse.json(ok ? { message: `${CLAUDE_MODELS[claude.model].label} answered. The assistant and AI diagnoses now use it.` } : { error: "Claude answered, but not in the expected format." }, { status: ok ? 200 : 502 });
+    } catch (error) {
+      return NextResponse.json({ error: error instanceof Error ? error.message : "Claude could not be reached." }, { status: 502 });
+    }
   }
   const result = await refreshAllVulnerabilities();
   return NextResponse.json({ result, vulnerabilities: await vulnerabilityStatus() });

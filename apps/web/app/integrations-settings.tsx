@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 type Status = {
   wordfence: { configured: boolean; source: string | null };
   pagespeed: { configured: boolean; source: string | null };
+  ai: { configured: boolean; source: string | null; model: string; models: Array<{ id: string; label: string; note: string }> };
   email: { configured: boolean; source: string | null; from: string | null; reminderEmails: string[] };
   vulnerabilities: { keyConfigured: boolean; feedFetchedAt: string | null; feedEntries: number; matchedSoftware: number; lastError: { reason: string; at: string } | null; closedPluginsCheckedAt: string | null };
   accountEmail: string;
@@ -69,7 +70,7 @@ export function IntegrationsSettings({ onNotice }: { onNotice: (message: string)
   return (
     <section className="panel integrations-panel">
       <div className="panel-heading"><div><p className="eyebrow">INTEGRATIONS</p><h2>Connected services</h2></div></div>
-      <p className="lead">Free keys that switch on known-vulnerability checks, PageSpeed scores and email reminders. Keys are stored encrypted and never shown again.</p>
+      <p className="lead">Keys that switch on known-vulnerability checks, PageSpeed scores, the AI assistant and email reminders. Keys are stored encrypted and never shown again.</p>
       <div className="tab-stack">
         <section className="tab-section">
           <KeyRow label="Vulnerability database (Wordfence Intelligence)" configured={status.wordfence.configured} source={status.wordfence.source} placeholder="Wordfence Intelligence API key" busy={busy === "wordfence"}
@@ -89,6 +90,20 @@ export function IntegrationsSettings({ onNotice }: { onNotice: (message: string)
           <KeyRow label="PageSpeed Insights (Google)" configured={status.pagespeed.configured} source={status.pagespeed.source} placeholder="Google API key" busy={busy === "pagespeed"}
             onSave={(value) => call("pagespeed", "PUT", { pagespeedKey: value }, "PageSpeed key saved. Open a website's Performance tab and run a test.")} onClear={() => call("pagespeed", "PUT", { pagespeedKey: null }, "PageSpeed key removed.")}
             help={<>Performance score, LCP, INP, CLS, FCP and TTFB for mobile and desktop, the same data as pagespeed.web.dev. Free: in <a href="https://developers.google.com/speed/docs/insights/v5/get-started#APIKey" target="_blank" rel="noreferrer">Google&apos;s PageSpeed guide</a> click <strong>Get a Key</strong> (25,000 tests a day). Google refuses most tests without a key.</>} />
+        </section>
+
+        <section className="tab-section">
+          <KeyRow label="AI assistant (Claude by Anthropic)" configured={status.ai.configured} source={status.ai.source} placeholder="Anthropic API key (sk-ant-…)" busy={busy === "anthropic"}
+            onSave={(value) => call("anthropic", "PUT", { anthropicKey: value }, "Anthropic key saved. Send a test question below.")} onClear={() => call("anthropic", "PUT", { anthropicKey: null }, "Anthropic key removed.")}
+            help={<>Answers questions in each website&apos;s assistant and writes AI diagnoses, only from the evidence the app has collected. Create a key at <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noreferrer">platform.claude.com</a> → API Keys; Anthropic bills usage to that account. A question sends the site&apos;s stored diagnostics, usually tens of thousands of tokens.</>} />
+          <div className="settings-grid">
+            <label>Model<select value={status.ai.model} disabled={Boolean(busy)} onChange={(event) => call("model", "PUT", { aiModel: event.target.value }, "Model saved.")}>
+              {status.ai.models.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
+            </select><small>{status.ai.models.find((model) => model.id === status.ai.model)?.note}</small></label>
+          </div>
+          <div className="section-actions">
+            <button className="button ghost" disabled={Boolean(busy) || !status.ai.configured} onClick={() => call("test-ai", "POST", { action: "test_ai" }, "Claude answered.")}>{busy === "test-ai" ? "Asking…" : "Send a test question"}</button>
+          </div>
         </section>
 
         <section className="tab-section">

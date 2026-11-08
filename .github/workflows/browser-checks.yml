@@ -1,0 +1,35 @@
+name: Browser checks (layout, mobile menu, accessibility)
+
+# Vercel functions have no browser, so the checks that need one run here:
+# pages are opened in Chromium at desktop, tablet and phone widths and checked
+# for horizontal overflow, a missing or broken mobile menu, JavaScript errors,
+# failed requests, accessibility problems and layout shift. Results are posted
+# to the app with the same MONITOR_URL and CRON_SECRET secrets as the
+# scheduled monitoring workflow.
+on:
+  schedule:
+    - cron: "15 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  browser-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Check every monitored site in a real browser
+        working-directory: apps/web
+        env:
+          MONITOR_URL: ${{ secrets.MONITOR_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: node --experimental-strip-types scripts/browser-checks.mjs

@@ -190,7 +190,7 @@ async function runTask<T>(
       ].join("\n");
     }
   }
-  throw new Error(`Local AI returned a diagnosis that failed strict validation: ${validationError.slice(0, 2500)}`);
+  throw new Error(`The AI returned an answer that failed strict validation: ${validationError.slice(0, 2500)}`);
 }
 
 function collectEvidenceReferences(value: unknown): EvidenceReference[] {
