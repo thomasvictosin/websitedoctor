@@ -110,7 +110,7 @@ function awd_integrity_htaccess_analysis(string $content): array
         elseif (preg_match('/\b(?:php_value|php_flag)\s+auto_(?:prepend|append)_file/i', $trimmed)) $reason = 'auto_prepend_file';
         elseif (preg_match('/\b(?:AddHandler|AddType|SetHandler)\b.*(?:php|x-httpd)/i', $trimmed) && !preg_match('/\.php[0-9]?\s*$/i', $trimmed)) $reason = 'php_handler_for_other_extensions';
         elseif (preg_match('/RewriteRule\s+.*\s+https?:\/\//i', $trimmed)) $reason = 'external_redirect_rule';
-        elseif (preg_match('/RewriteRule\s+.*\.(?:php|html?)\b.*\[.*L/i', $trimmed) && !$in_wordpress_block && !preg_match('/index\.php/i', $trimmed)) $reason = 'rewrite_to_non_wordpress_script';
+        elseif (preg_match('/RewriteRule\s+.*\.(?:php|html?)\b.*\[.*L/i', $trimmed) && !$in_wordpress_block && !preg_match('/index\\\\?\.php/i', $trimmed)) $reason = 'rewrite_to_non_wordpress_script';
         if ($reason !== null) {
             $suspicious[] = array('line' => $number + 1, 'reason' => $reason, 'text' => substr($trimmed, 0, 200));
             if (count($suspicious) >= 10) break;

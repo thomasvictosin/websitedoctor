@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { authorizeOwnerRequest } from "@/lib/auth-api";
-import { CleanupError, isCleanupProposal, loadCleanupPlan, maintenanceSummary, startCleanup, startPluginUpdates, startQuarantinePurge, startRunRestore } from "@/lib/cleanup-service";
+import { CleanupError, expireStaleRuns, isCleanupProposal, loadCleanupPlan, maintenanceSummary, startCleanup, startPluginUpdates, startQuarantinePurge, startRunRestore } from "@/lib/cleanup-service";
 import { db } from "@/lib/db";
 import { ownedWebsiteWhere } from "@/lib/ownership";
 import { readBoundedJson } from "@/lib/request-json";
@@ -22,6 +22,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ site
   const { siteId } = await params;
   const owned = await ownedSite(request, siteId, false);
   if ("response" in owned) return owned.response;
+  await expireStaleRuns(owned.website.id);
   const { plan, agent } = await loadCleanupPlan(owned.website.id);
   const runs = (await db.repairProposal.findMany({
     where: { websiteId: owned.website.id, proposal: { path: ["kind"], equals: "compromise_cleanup" } },

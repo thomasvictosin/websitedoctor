@@ -607,9 +607,15 @@ function awd_cleanup_execute_task(array $settings, array $task): array
     if (!add_option($lock, time(), '', false)) return array('ok' => false, 'message' => 'A cleanup is already running.');
     try {
         if (function_exists('set_time_limit')) @set_time_limit(300);
+        // Background requests (WP-Cron, wake-ups) run with the front-end memory limit, which can be far too
+        // small to unpack a plugin (this site: 40M). Use the admin limit WordPress uses for updates.
+        if (function_exists('wp_raise_memory_limit')) wp_raise_memory_limit('admin');
         $run_id = strtolower(wp_generate_password(20, false, false));
         $started_at = gmdate('c');
+        $GLOBALS['awd_cleanup_inflight'] = array('settings' => $settings, 'task' => $task, 'runId' => $run_id, 'startedAt' => $started_at);
+        register_shutdown_function('awd_cleanup_shutdown_guard');
         $results = awd_cleanup_execute_steps($run_id, (string) $task['repairId'], array_values($task['steps']));
+        unset($GLOBALS['awd_cleanup_inflight']);
         $GLOBALS['awd_force_integrity_scan'] = true;
         $sync = awd_send_diagnostics();
         $report = awd_authenticated_request($settings, '/cleanup-executions', 'POST', array(
@@ -829,4 +835,51 @@ function awd_wake_handler()
         awd_poll_central();
     });
     return new WP_REST_Response(array('ok' => true), 202);
+}
+
+/**
+ * Runs when PHP stops in the middle of a task (memory or time limit, fatal
+ * error): puts back a plugin directory that was moved aside, releases the
+ * lock, and reports the failure so the central app does not wait forever.
+ */
+function awd_cleanup_shutdown_guard(): void
+{
+    $inflight = $GLOBALS['awd_cleanup_inflight'] ?? null;
+    if (!is_array($inflight)) return;
+    unset($GLOBALS['awd_cleanup_inflight']);
+    @ini_set('memory_limit', '256M');
+    $error = error_get_last();
+    $move = $GLOBALS['awd_cleanup_pending_move'] ?? null;
+    $put_back = false;
+    if (is_array($move) && file_exists((string) $move['stored'])) {
+        if (is_dir((string) $move['dir'])) awd_cleanup_remove_tree((string) $move['dir']);
+        $put_back = awd_cleanup_move((string) $move['stored'], (string) $move['dir']);
+    }
+    delete_option('awd_cleanup_lock');
+    $reason = 'PHP stopped while applying this change' . (is_array($error) ? ': ' . substr(awd_redact_error_text((string) $error['message']), 0, 300) : '') . '.'
+        . ($put_back ? ' The original plugin files were put back.' : '');
+    $runs = awd_cleanup_runs();
+    $recorded = (array) ($runs[$inflight['runId']]['steps'] ?? array());
+    $steps = array();
+    $failed_marked = false;
+    foreach (array_values((array) $inflight['task']['steps']) as $index => $step) {
+        if (isset($recorded[$index])) {
+            $steps[] = array('index' => $index, 'operation' => (string) $step['operation'], 'status' => (string) $recorded[$index]['status'], 'message' => substr((string) $recorded[$index]['message'], 0, 500));
+        } elseif (!$failed_marked) {
+            $steps[] = array('index' => $index, 'operation' => (string) $step['operation'], 'status' => 'failed', 'message' => substr($reason, 0, 500));
+            $failed_marked = true;
+        } else {
+            $steps[] = array('index' => $index, 'operation' => (string) $step['operation'], 'status' => 'not_attempted', 'message' => 'Not attempted because PHP stopped on an earlier step.');
+        }
+    }
+    awd_authenticated_request((array) $inflight['settings'], '/cleanup-executions', 'POST', array(
+        'event' => 'executed',
+        'repairId' => (string) $inflight['task']['repairId'],
+        'authorizationGrantId' => (string) $inflight['task']['authorizationGrantId'],
+        'runId' => (string) $inflight['runId'],
+        'startedAt' => (string) $inflight['startedAt'],
+        'completedAt' => gmdate('c'),
+        'diagnosticsSynced' => false,
+        'steps' => $steps,
+    ));
 }

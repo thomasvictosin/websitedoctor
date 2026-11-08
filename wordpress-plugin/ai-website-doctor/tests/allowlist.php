@@ -390,4 +390,7 @@ awd_test_assert(count($first) === 1 && $repeat === array() && count($returned) =
 awd_test_assert(awd_cleanup_step_is_valid(array('operation' => 'set_hardening', 'parameters' => array('measure' => 'block_php_uploads', 'state' => 'on'))), 'set_hardening must validate');
 awd_test_assert(!awd_cleanup_step_is_valid(array('operation' => 'set_hardening', 'parameters' => array('measure' => 'run_code', 'state' => 'on'))), 'unknown hardening measures must be rejected');
 
+$standard = awd_integrity_htaccess_analysis("RewriteEngine On\nRewriteRule ^index\\.php$ - [L]\nRewriteRule ^(.*)$ wp-cache.php?p=$1 [L]\n");
+awd_test_assert(count($standard) === 1 && $standard[0]['line'] === 3, 'the standard escaped index.php rule must not be flagged; a foreign script rewrite must');
+
 echo "WordPress plugin tests passed.\n";

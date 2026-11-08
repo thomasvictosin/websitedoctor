@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { authorizeOwnerRequest } from "@/lib/auth-api";
-import { CleanupError, PROTECTION_MEASURE_TITLES, startProtectionChange } from "@/lib/cleanup-service";
+import { CleanupError, expireStaleRuns, PROTECTION_MEASURE_TITLES, startProtectionChange } from "@/lib/cleanup-service";
 import { db } from "@/lib/db";
 import { ownedWebsiteWhere } from "@/lib/ownership";
 import { getProtectionSettings, recentSiteAlerts, saveProtectionSettings } from "@/lib/protection";
@@ -25,6 +25,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ site
   const { siteId } = await params;
   const owned = await ownedSite(request, siteId, false);
   if ("response" in owned) return owned.response;
+  await expireStaleRuns(owned.website.id);
   const diagnostics = (owned.website.wordpressAgent?.diagnostics ?? {}) as { hardening?: Array<{ id: string; enabled: boolean; verified: boolean | null; detail: string; changedAt: string | null }>; site?: { pluginVersion?: string } };
   const reported = new Map((diagnostics.hardening ?? []).map((measure) => [measure.id, measure]));
   const measures = RECOMMENDED.map((id) => ({ id, title: PROTECTION_MEASURE_TITLES[id], enabled: reported.get(id)?.enabled ?? false, verified: reported.get(id)?.verified ?? null, detail: reported.get(id)?.detail ?? "", reported: reported.has(id) }));

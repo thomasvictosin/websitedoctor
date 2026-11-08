@@ -209,8 +209,14 @@ function awd_cleanup_op_replace_plugin(array $params, array $context, string $ta
     if (is_link($dir) || !is_dir($dir)) return awd_cleanup_result('failed', 'The plugin directory is missing or is a symbolic link.');
     $was_active = is_plugin_active($plugin);
     $stored = $context['index'] . '.plugin';
-    if (!awd_cleanup_move($dir, $context['runDir'] . '/' . $stored)) return awd_cleanup_result('failed', 'The current plugin files could not be moved into the quarantine (check file permissions). No change was made.');
+    // If PHP dies before this step finishes (memory or time limit), the shutdown guard puts the original back.
+    $GLOBALS['awd_cleanup_pending_move'] = array('dir' => $dir, 'stored' => $context['runDir'] . '/' . $stored);
+    if (!awd_cleanup_move($dir, $context['runDir'] . '/' . $stored)) {
+        unset($GLOBALS['awd_cleanup_pending_move']);
+        return awd_cleanup_result('failed', 'The current plugin files could not be moved into the quarantine (check file permissions). No change was made.');
+    }
     $put_back = static function () use ($dir, $context, $stored) {
+        unset($GLOBALS['awd_cleanup_pending_move']);
         if (is_dir($dir)) awd_cleanup_remove_tree($dir);
         return awd_cleanup_move($context['runDir'] . '/' . $stored, $dir);
     };
@@ -224,6 +230,7 @@ function awd_cleanup_op_replace_plugin(array $params, array $context, string $ta
         $restored = $put_back();
         return awd_cleanup_result('failed', 'The site broke after the change (' . $after['reason'] . ').' . ($restored ? ' The previous version was put back automatically.' : ' The previous version could not be put back; restore this run from the plugin.'));
     }
+    unset($GLOBALS['awd_cleanup_pending_move']);
     if ($was_active && !is_plugin_active($plugin)) activate_plugin($plugin, '', false, true);
     return awd_cleanup_result('applied', sprintf('%s %s → %s installed from WordPress.org; all files match the official checksums and the site still loads.', $slug, $installed_version, $target_version), array(
         'plugin' => $plugin, 'source' => $slug, 'stored' => $stored, 'versionBefore' => $installed_version, 'versionAfter' => $target_version, 'wasActive' => $was_active,

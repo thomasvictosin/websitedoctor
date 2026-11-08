@@ -80,6 +80,7 @@ export async function startCleanup(input: {
     anchorIssueId = anchor?.id ?? null;
   }
   if (!steps.length) throw new CleanupError("There is nothing to clean up.", 400);
+  await expireStaleRuns(input.websiteId);
   if (!steps.every((step) => cleanupStepSchema.safeParse(step).success)) throw new CleanupError("A cleanup step failed validation.", 400);
   const digest = cleanupStepsDigest(steps);
   const operationIds = [...new Set(steps.map((step) => step.operation))];
@@ -173,6 +174,7 @@ export async function wakeSite(websiteId: string) {
 
 /** Claim approved cleanup runs for the agent; each grant can be dispatched exactly once. */
 export async function dispatchCleanupTasks(agentId: string, websiteId: string, onlyRepairId?: string) {
+  await expireStaleRuns(websiteId);
   const candidates = await db.repairProposal.findMany({
     where: { websiteId, status: "approved", proposal: { path: ["kind"], equals: CLEANUP_KIND }, ...(onlyRepairId ? { id: onlyRepairId } : {}) },
     orderBy: { approvedAt: "asc" },
@@ -262,7 +264,8 @@ export async function recordCleanupReport(agent: { id: string; websiteId: string
     ? await db.repairApproval.findFirst({ where: { id: report.authorizationGrantId, repairId: repair.id, authorizationMethod: CLEANUP_KIND, consumedAt: { not: null } }, select: { id: true } })
     : null;
   if (!grant) throw new CleanupError("The report does not match the dispatched cleanup authorization.", 403);
-  if (repair.status !== "executing") throw new CleanupError("This cleanup run is not awaiting a result.", 409);
+  const lateReport = repair.status === "failed" && record(cleanup.execution).lost === true;
+  if (repair.status !== "executing" && !lateReport) throw new CleanupError("This cleanup run is not awaiting a result.", 409);
 
   if (cleanup.mode === "maintenance") return recordMaintenanceReport(agent, repair, proposal, cleanup, report);
   const failed = report.steps.filter((step) => step.status === "failed");
@@ -465,3 +468,41 @@ export const PROTECTION_MEASURE_TITLES: Record<string, string> = {
   security_headers: "Security headers",
   verified_crawlers: "Block fake crawlers and attack tools",
 };
+
+const LOST_AFTER_MS = 10 * 60_000;
+
+/**
+ * Close runs the site will never finish: picked up but no report within 10
+ * minutes (PHP was stopped by a memory or time limit on a plugin older than
+ * 0.6.2, which cannot report that itself), or never picked up before the
+ * grant expired. Otherwise one lost run would block the site indefinitely.
+ */
+export async function expireStaleRuns(websiteId: string) {
+  const now = Date.now();
+  const candidates = await db.repairProposal.findMany({
+    where: { websiteId, status: { in: ACTIVE_STATUSES }, proposal: { path: ["kind"], equals: CLEANUP_KIND } },
+    select: { id: true, status: true, createdAt: true, proposal: true, executions: { select: { id: true, agentId: true, startedAt: true }, take: 1, orderBy: { createdAt: "desc" } } },
+  });
+  for (const run of candidates) {
+    const execution = run.executions[0];
+    const lost = run.status === "executing" && execution?.startedAt && now - execution.startedAt.getTime() > LOST_AFTER_MS;
+    const neverPickedUp = run.status === "approved" && now - run.createdAt.getTime() > GRANT_TTL_MS;
+    if (!lost && !neverPickedUp) continue;
+    const reason = lost
+      ? `The site picked up this change at ${execution!.startedAt!.toISOString()} but never reported back. PHP on the site was most likely stopped by its memory or time limit before it finished. Plugin 0.6.2 and later raise the limit and report such failures themselves. Check the plugin's Quarantine section for anything left there, then try again.`
+      : "The site never picked up this change (the plugin was offline or WP-Cron did not run). Nothing was changed; approve it again when the plugin is back online.";
+    const proposal = record(run.proposal);
+    const cleanup = record(proposal.cleanup);
+    const updated = await db.repairProposal.updateMany({
+      where: { id: run.id, status: run.status },
+      data: {
+        status: "failed", executionStatus: lost ? "unknown" : "not_started", verificationStatus: "inconclusive",
+        proposal: { ...proposal, cleanup: { ...cleanup, execution: { lost: true, steps: null, verification: { status: "inconclusive", reasons: [reason] } } } } as Prisma.InputJsonValue,
+      },
+    });
+    if (!updated.count) continue;
+    if (execution) await db.agentExecution.update({ where: { id: execution.id }, data: { status: lost ? "lost" : "expired", completedAt: new Date() } });
+    await db.repairEvent.create({ data: { repairId: run.id, eventType: lost ? "cleanup_lost" : "cleanup_expired", actor: "central", details: { reason } } });
+    await notifySite(websiteId, "maintenance", `${String(proposal.issue ?? "Change")} did not finish`, reason);
+  }
+}
