@@ -26,6 +26,8 @@ const AUTO_UPDATE_INTERVAL_MS = 24 * 60 * 60_000;
 export const protectionSettingsSchema = z.object({
   selfHealing: z.boolean().default(false),
   autoUpdates: z.boolean().default(false),
+  /** Pause all automation for the site without forgetting which responses are switched on. */
+  paused: z.boolean().default(false),
   updatedAt: z.string().optional(),
   updatedBy: z.string().nullable().optional(),
 });
@@ -34,10 +36,10 @@ export type ProtectionSettings = z.infer<typeof protectionSettingsSchema>;
 export async function getProtectionSettings(websiteId: string): Promise<ProtectionSettings> {
   const setting = await db.systemSetting.findFirst({ where: { scope: "site", scopeId: websiteId, key: PROTECTION_KEY }, select: { value: true } });
   const parsed = protectionSettingsSchema.safeParse(setting?.value ?? {});
-  return parsed.success ? parsed.data : { selfHealing: false, autoUpdates: false };
+  return parsed.success ? parsed.data : { selfHealing: false, autoUpdates: false, paused: false };
 }
 
-export async function saveProtectionSettings(websiteId: string, organizationId: string, changes: Partial<Pick<ProtectionSettings, "selfHealing" | "autoUpdates">>, userId: string | null) {
+export async function saveProtectionSettings(websiteId: string, organizationId: string, changes: Partial<Pick<ProtectionSettings, "selfHealing" | "autoUpdates" | "paused">>, userId: string | null) {
   const current = await getProtectionSettings(websiteId);
   const value = { ...current, ...changes, updatedAt: new Date().toISOString(), updatedBy: userId };
   await db.systemSetting.upsert({
@@ -81,6 +83,7 @@ type Actor = { kind: "standing"; userId: null; interface: "self_healing" | "auto
 export async function maybeSelfHeal(websiteId: string) {
   const settings = await getProtectionSettings(websiteId);
   if (!settings.selfHealing) return { started: false, reason: "self-healing is off" };
+  if (settings.paused) return { started: false, reason: "automation is paused" };
   const evidence = await db.issue.count({ where: { websiteId, status: { in: ["open", "acknowledged"] }, severity: { in: ["critical", "high"] }, OR: [{ fingerprint: { startsWith: "security:" } }, { fingerprint: { startsWith: "wp:integrity:" } }] } });
   if (!evidence) return { started: false, reason: "no open compromise findings" };
   const { loadCleanupPlan, startCleanup, CleanupError } = await import("./cleanup-service.ts");
@@ -114,6 +117,7 @@ export async function maybeSelfHeal(websiteId: string) {
 export async function maybeAutoUpdate(websiteId: string) {
   const settings = await getProtectionSettings(websiteId);
   if (!settings.autoUpdates) return { started: false, reason: "automatic updates are off" };
+  if (settings.paused) return { started: false, reason: "automation is paused" };
   const compromised = await db.issue.count({ where: { websiteId, status: { in: ["open", "acknowledged"] }, severity: { in: ["critical", "high"] }, OR: [{ fingerprint: { startsWith: "security:" } }, { fingerprint: { startsWith: "wp:integrity:" } }] } });
   if (compromised) return { started: false, reason: "clean up the open security findings first" };
   const last = await db.repairProposal.findFirst({ where: { websiteId, initiatingInterface: "auto_update" }, orderBy: { createdAt: "desc" }, select: { createdAt: true } });

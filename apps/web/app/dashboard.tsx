@@ -7,6 +7,7 @@ import { CleanupManager } from "./cleanup-manager";
 import { useConfirm } from "./confirm-dialog";
 import { IssueBoard, isOpenIssue } from "./issue-board";
 import { CloudflarePanel, ProtectionManager } from "./protection-manager";
+import { RepairCentre, type LegacyRepairRow } from "./repair-centre";
 import { McpAccessManager } from "./mcp-access-manager";
 import { parseAssistantRepairPermissionCommand } from "@/lib/repair-assistant-intent";
 
@@ -345,39 +346,7 @@ export default function Home() {
     finally { setRepairPolicyBusy(false); }
   }
 
-  async function pauseAllAutomaticRepairs() {
-    const automaticSites = websites;
-    if (automaticSites.length === 0) return;
-    setRepairPolicyBusy(true);
-    try {
-      const outcomes = await Promise.all(automaticSites.map(async (site) => {
-        try {
-        const currentResponse = await fetch(`/api/sites/${site.id}/repair-authorization`);
-        const current = await currentResponse.json();
-        if (!currentResponse.ok) throw new Error(`${site.name}: ${current.error ?? "Could not read permissions."}`);
-        if (current.mode !== "auto_eligible" || current.paused) return { site: site.name, changed: false, error: "" };
-        const response = await fetch(`/api/sites/${site.id}/repair-authorization`, {
-          method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...current, paused: true }),
-        });
-        const result = await response.json();
-        if (!response.ok) throw new Error(`${site.name}: ${result.error ?? "Could not pause automatic repairs."}`);
-        return { site: site.name, changed: true, error: "" };
-        } catch (error) {
-          return { site: site.name, changed: false, error: error instanceof Error ? error.message : "Could not pause automatic repairs." };
-        }
-      }));
-      const changed = outcomes.filter((item) => item.changed).map((item) => item.site);
-      setMessage(changed.length ? `Automatic repairs paused for: ${changed.join(", ")}. Manual Fix This Issue approvals remain available.` : "Automatic repairs were already paused or disabled on every website. Manual approvals remain available.");
-      const failed = outcomes.filter((item) => item.error);
-      if (selectedWebsiteId) {
-        const response = await fetch(`/api/sites/${selectedWebsiteId}/repair-authorization`);
-        if (response.ok) setRepairPolicy(await response.json());
-      }
-      await refresh();
-      if (failed.length) setMessage((current) => `${current} Could not update: ${failed.map((item) => item.error).join("; ")}`);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Could not pause automatic repairs across websites."); }
-    finally { setRepairPolicyBusy(false); }
-  }
+
 
   async function submitPromptRepair(targetSiteId = selectedWebsiteId, requestText = repairPrompt, selectedIssueId = repairPromptIssueId) {
     if (!targetSiteId || requestText.trim().length < 3) return;
@@ -1294,7 +1263,7 @@ export default function Home() {
         <div className="header-actions">
           <a className="button ghost" href="/api/reports">Export report</a>
           <button className="button ghost" onClick={logout}>Sign out</button>
-          <span className="local-badge"><span className="pulse" /> LOCAL MONITORING</span>
+          <span className="local-badge"><span className="pulse" /> MONITORING ON</span>
         </div>
       </header>
 
@@ -1323,14 +1292,16 @@ export default function Home() {
         <h1>{activeView === "dashboard" ? "A healthier web starts here." : {
           websites: "Your websites",
           issues: "Issue centre",
-          repairs: "Repair centre",
+          repairs: "Repairs & automation",
           assistant: "Ask about your website health",
           team: "Organization members",
           dashboard: "Overview",
         }[activeView]}</h1>
         <p className="subtitle">{activeView === "assistant"
           ? "Answers use stored scan and issue evidence. If the evidence is missing, the assistant will say so."
-          : "Monitor availability, review evidence, and get local AI guidance — all from your own machine."}</p>
+          : activeView === "repairs"
+            ? "Everything the app can fix, what is running now, what waits for you, what runs automatically, and what happened."
+            : "Monitor availability, review evidence, and get local AI guidance — all from your own machine."}</p>
       </section>
 
       {activeView === "dashboard" && websites.filter((site) => compromiseFindings(site.id).length > 0).map((site) => (
@@ -1548,20 +1519,68 @@ export default function Home() {
       </section>}
 
       {activeView === "repairs" && (
-        <section className="repair-centre">
-          <section className="panel global-repair-pause">
-            <div><p className="eyebrow">IMMEDIATE CONTROL</p><h2>Automatic repair controls</h2><p>Pausing stops new standing-policy authorizations across every website. Individual manual approvals remain available.</p></div>
-            <button className="button danger" onClick={pauseAllAutomaticRepairs} disabled={repairPolicyBusy || websites.length === 0}>{repairPolicyBusy ? "Pausing…" : "Pause All Automatic Repairs"}</button>
-          </section>
-          <section className="panel repair-authorization-panel">
-            <div className="panel-heading"><div><p className="eyebrow">CONTROLLED AUTONOMY</p><h2>Repair authorization</h2></div></div>
+        <RepairCentre
+          legacy={repairRows.filter(({ repair }) => (repair.proposal as { kind?: string }).kind !== "compromise_cleanup").map(({ issue, repair }): LegacyRepairRow => ({
+            id: repair.id, siteId: issue.website.id, siteName: issue.website.name, title: repair.proposal.issue || issue.title, status: repair.status, risk: repair.risk,
+            createdAt: repair.createdAt, rationale: repair.proposal.rationale, changes: repair.proposal.proposedChanges,
+            executable: repair.operationIds.length > 0 && Boolean(repair.proposal.executionAvailable),
+          }))}
+          onOpenSite={(siteId, tab) => openWebsiteDetail(siteId, tab)}
+          onNotice={setMessage}
+          decisionSlot={(() => {
+            const pending = filteredRepairRows.filter(({ repair }) => repair.status === "pending_approval" && (repair.proposal as { kind?: string }).kind !== "compromise_cleanup");
+            return (
+              <section className="panel">
+                <div className="panel-heading"><div><p className="eyebrow">YOUR DECISION</p><h2>Waiting for your approval</h2></div><span className="count-pill">{pending.length}</span></div>
+                {pending.length === 0 ? <p className="activity-empty">Nothing is waiting for you. Fixes you start from Issues or a website&apos;s Clean up tab run straight away and appear under In progress.</p> : (
+                  <div className="board-cards decision-list">
+                    {pending.map(({ issue, repair }) => {
+                      const executable = repair.operationIds.length > 0 && Boolean(repair.proposal.executionAvailable);
+                      return (
+                        <article className={`board-card severity-edge-${issue.severity}`} key={repair.id}>
+                          <div className="board-card-head">
+                            <span className={`severity severity-${issue.severity}`}>{issue.severity}</span>
+                            <div className="board-card-title"><strong>{repair.proposal.issue || issue.title}</strong><small>{issue.website.name} · {executable ? `automatic repair · ${repair.risk} risk` : "manual plan (the app will not change the site)"}</small></div>
+                          </div>
+                          {repair.proposal.rationale && <p className="board-card-description">{repair.proposal.rationale}</p>}
+                          <div className="board-card-actions">
+                            {executable
+                              ? <button className="button primary" onClick={() => decideRepair(repair.id, "approve_and_apply")} disabled={busy !== null}>Approve &amp; fix</button>
+                              : <button className="button secondary" onClick={() => decideRepair(repair.id, "approve")} disabled={busy !== null}>Mark plan as read</button>}
+                            <button className="button ghost" onClick={() => decideRepair(repair.id, "reject")} disabled={busy !== null}>Reject</button>
+                            {executable && <label className="batch-repair-select"><input type="checkbox" checked={selectedBatchRepairs.includes(repair.id)} onChange={(event) => setSelectedBatchRepairs((current) => event.target.checked ? [...current, repair.id] : current.filter((id) => id !== repair.id))} /> Select for batch</label>}
+                          </div>
+                          <details className="issue-evidence"><summary>What exactly changes</summary>
+                            {repair.proposal.proposedChanges.length > 0 && <ul className="plain-list">{repair.proposal.proposedChanges.map((change, index) => <li key={index}>{change}</li>)}</ul>}
+                            {repair.proposal.manualGuidance && repair.proposal.manualGuidance.length > 0 && <ol className="plain-list">{repair.proposal.manualGuidance.map((step, index) => <li key={index}>{step}</li>)}</ol>}
+                            <RepairApprovalDetails repair={repair} />
+                          </details>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+                {selectedBatchRepairs.length > 0 && (
+                  <div className="batch-bar">
+                    <span><strong>{selectedBatchRepairs.length} selected.</strong> Each is re-checked before it runs.</span>
+                    <button className="button primary" onClick={approveRepairBatch} disabled={repairPolicyBusy}>Approve &amp; fix {selectedBatchRepairs.length}</button>
+                  </div>
+                )}
+              </section>
+            );
+          })()}
+          advancedSlot={(
+            <details className="panel advanced-panel">
+              <summary><span className="eyebrow">ADVANCED</span><strong>Repair permissions and requests in your own words</strong></summary>
+          <section className="repair-authorization-panel">
+            <p className="advanced-intro">Fine-grained settings for the original scan-based repairs. Most people only need the switches under <strong>What runs without you</strong>. Plugin isolation and theme switching are high risk and always need your approval, so they cannot be made automatic.</p>
             <label>Website<select value={selectedWebsiteId ?? ""} onChange={(event) => { setSelectedWebsiteId(event.target.value || null); setRepairPromptIssueId(""); }}>
               {websites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}
             </select></label>
-            <p>Automatic mode only queues one allowlisted operation when it matches your selected permissions and risk ceiling. Diagnosis never grants permission to invent code or run arbitrary commands.</p>
+            <p>When automatic mode is on, a scan finding that maps to exactly one of the permitted repairs below is queued without asking you, applied with an undo copy and verified. Nothing else is ever automatic here.</p>
             <label className="repair-policy-toggle"><input type="checkbox" checked={repairPolicy.mode === "auto_eligible"} onChange={(event) => setRepairPolicy((current) => ({ ...current, mode: event.target.checked ? "auto_eligible" : "manual" }))} /> Automatically queue eligible repairs under this policy</label>
             <fieldset><legend>Permitted operations</legend>
-              {repairOperationDescriptions.map(([operation, description]) => <label key={operation} className="repair-policy-toggle"><input type="checkbox" checked={repairPolicy.allowedOperations.includes(operation)} onChange={(event) => setRepairPolicy((current) => ({ ...current, allowedOperations: event.target.checked ? [...current.allowedOperations, operation] : current.allowedOperations.filter((item) => item !== operation) }))} /><span><strong>{operation.replaceAll("_", " ")}</strong><small>{description}</small></span></label>)}
+              {repairOperationDescriptions.filter(([operation]) => operation === "replace_post_link" || operation === "update_setting").map(([operation, description]) => <label key={operation} className="repair-policy-toggle"><input type="checkbox" checked={repairPolicy.allowedOperations.includes(operation)} onChange={(event) => setRepairPolicy((current) => ({ ...current, allowedOperations: event.target.checked ? [...current.allowedOperations, operation] : current.allowedOperations.filter((item) => item !== operation) }))} /><span><strong>{operation === "replace_post_link" ? "Update links that permanently redirect" : "Change the site title or tagline (from a typed request)"}</strong><small>{description}</small></span></label>)}
             </fieldset>
             <label>Maximum risk<select value={repairPolicy.maxRisk} onChange={(event) => setRepairPolicy((current) => ({ ...current, maxRisk: event.target.value as RepairAuthorizationPolicy["maxRisk"] }))}><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
             <label>Maximum automatic repairs queued at once<input type="number" min={1} max={25} value={repairPolicy.maxRepairsPerBatch} onChange={(event) => setRepairPolicy((current) => ({ ...current, maxRepairsPerBatch: Math.max(1, Math.min(25, Number(event.target.value) || 1)) }))} /></label>
@@ -1576,84 +1595,9 @@ export default function Home() {
               <small>Requests can only map to stored issues and existing allowlisted operations. Ambiguous matches ask you to select an issue; unsupported requests produce guidance only.</small>
             </div>
           </section>
-          <section className="panel batch-approval-bar">
-            <div><strong>Batch approval · {selectedBatchRepairs.length} selected</strong><small>Selected proposals are revalidated for ownership, freshness, executor connection, exact allowlisted scope, and overlap.</small>
-              {selectedBatchRepairs.length > 0 && <ul>{selectedBatchRepairs.map((id) => {
-                const selected = repairRows.find(({ repair }) => repair.id === id);
-                return selected ? <li key={id}>{selected.issue.website.name} · {selected.issue.title} · {selected.repair.risk} risk · {selected.repair.proposal.proposedChanges.join("; ")}</li> : null;
-              })}</ul>}
-            </div>
-            <button className="button secondary" onClick={approveRepairBatch} disabled={repairPolicyBusy || selectedBatchRepairs.length === 0}>Approve and queue {selectedBatchRepairs.length || "selected"}</button>
-          </section>
-          <section className="panel" aria-label="Repair filters">
-            <div className="panel-heading"><div><p className="eyebrow">REPAIR HISTORY</p><h2>Filter repairs</h2></div></div>
-            <div className="repair-filter-row">
-              <label>Website<select value={repairWebsiteFilter} onChange={(event) => setRepairWebsiteFilter(event.target.value)}>
-                <option value="all">All websites</option>{websites.map((site) => <option key={site.id} value={site.id}>{site.name}</option>)}
-              </select></label>
-              <label>Risk<select value={repairRiskFilter} onChange={(event) => setRepairRiskFilter(event.target.value)}><option value="all">All risk levels</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
-              <label>From<input type="date" value={repairFromDate} onChange={(event) => setRepairFromDate(event.target.value)} /></label>
-              <label>To<input type="date" value={repairToDate} onChange={(event) => setRepairToDate(event.target.value)} /></label>
-            </div>
-          </section>
-          {([
-            ["Pending approval", ["pending_approval"]],
-            ["Approved / executing", ["approved", "executing", "in_progress"]],
-            ["Successful", ["verified"]],
-            ["Failed", ["failed", "verification_failed", "inconclusive"]],
-            ["Rollback needed", ["rollback_required"]],
-            ["Rolled back", ["rolled_back"]],
-            ["Rejected", ["rejected"]],
-          ] as Array<[string, string[]]>).map(([title, statuses]) => {
-            const rows = filteredRepairRows.filter(({ repair }) => statuses.includes(repair.status));
-            return (
-              <section className="panel repair-group" key={title}>
-                <div className="panel-heading"><div><p className="eyebrow">REPAIR WORKFLOW</p><h2>{title}</h2></div><span className="count-pill">{rows.length}</span></div>
-                {rows.length === 0 ? <p className="activity-empty">No repairs in this stage.</p> : (
-                  <div className="issue-list">{rows.map(({ issue, repair }) => (
-                    <article className="repair-card repair-centre-card" key={repair.id}>
-                      {repair.status === "pending_approval" && repair.operationIds.length > 0 && repair.proposal.executionAvailable && <label className="batch-repair-select"><input type="checkbox" checked={selectedBatchRepairs.includes(repair.id)} onChange={(event) => setSelectedBatchRepairs((current) => event.target.checked ? [...current, repair.id] : current.filter((id) => id !== repair.id))} /> Include in batch approval</label>}
-                      <div className="issue-heading">
-                        <span className={`severity severity-${issue.severity}`}>{issue.severity}</span>
-                        <div><strong>{repair.proposal.issue || issue.title}</strong><small>{issue.website.name} · {repair.risk} risk · {repair.status.replaceAll("_", " ")}</small></div>
-                      </div>
-                      <p>{repair.proposal.rationale}</p>
-                      {repair.proposal.expectedImpact && <p><strong>Expected impact:</strong> {repair.proposal.expectedImpact}</p>}
-                      {repair.proposal.recoveryAvailability && <p><strong>Undo:</strong> {repair.proposal.recoveryAvailability}</p>}
-                      {repair.status === "rollback_required" && <p className="repair-limitation"><strong>Recovery needed:</strong> The plugin could not confirm its operation-specific undo. Review the execution and verification evidence below; use your existing site recovery process if manual recovery is needed.</p>}
-                      {repair.proposal.proposedChanges.length > 0 && <ul>{repair.proposal.proposedChanges.map((change, index) => <li key={index}>{change}</li>)}</ul>}
-                      {repair.proposal.manualGuidance && repair.proposal.manualGuidance.length > 0 && <div><strong>Manual remediation guidance · no changes will be executed</strong><ol>{repair.proposal.manualGuidance.map((step, index) => <li key={index}>{step}</li>)}</ol></div>}
-                      <RepairApprovalDetails repair={repair} />
-                      <div className="repair-state-grid">
-                        <span>Approval <strong>{repair.approvalStatus}</strong></span>
-                        <span>Backup <strong>{repair.backupStatus}</strong></span>
-                        <span>Execution <strong>{repair.executionStatus}</strong></span>
-                        <span>Verification <strong>{repair.verificationStatus}</strong></span>
-                        <span>Rollback <strong>{repair.rollbackStatus}</strong></span>
-                      </div>
-                      {repair.status === "pending_approval" && (
-                        <div className="issue-actions">
-                          {repair.operationIds.length > 0 && repair.proposal.executionAvailable
-                            ? <button className="button primary" onClick={() => decideRepair(repair.id, "approve_and_apply")} disabled={busy !== null}>Fix This Issue</button>
-                            : <button className="button secondary" onClick={() => decideRepair(repair.id, "approve")} disabled={busy !== null}>{repair.proposal.hostingRequest ? "Acknowledge review only" : "Acknowledge manual plan"}</button>}
-                          <button className="button ghost" onClick={() => decideRepair(repair.id, "reject")} disabled={busy !== null}>Reject</button>
-                        </div>
-                      )}
-                      {repair.events.length > 0 && <details><summary>Lifecycle history ({repair.events.length})</summary>
-                        <ol>{repair.events.map((event) => <li key={event.id}>{event.eventType.replaceAll("_", " ")} · {event.actor} · {new Date(event.createdAt).toLocaleString()}</li>)}</ol>
-                      </details>}
-                      {(repair.approvals?.length || repair.verificationResults?.length) ? <details><summary>Approvals and verification evidence</summary>
-                        {repair.approvals?.map((approval) => <p key={approval.id}>Approval: {approval.decision} · {new Date(approval.createdAt).toLocaleString()}{approval.comment ? ` · ${approval.comment}` : ""}</p>)}
-                        {repair.verificationResults?.map((verification) => <div key={verification.id}><p>Verification: {verification.status} via {verification.method} · {new Date(verification.createdAt).toLocaleString()}</p><pre>{JSON.stringify(verification.result, null, 2)}</pre></div>)}
-                      </details> : null}
-                    </article>
-                  ))}</div>
-                )}
-              </section>
-            );
-          })}
-          <p className="repair-limitation">Queued repairs are delivered to the connected WordPress plugin on its next traffic-triggered WP-Cron poll. Sites with no incoming traffic may not poll promptly.</p>
-        </section>
+            </details>
+          )}
+        />
       )}
 
       {activeView === "assistant" && (
@@ -1721,14 +1665,14 @@ export default function Home() {
       {activeView === "dashboard" && <section className="system-settings">
         <div><span className="eyebrow">SYSTEM SETTINGS</span><strong>Organization accounts</strong><small>Database-backed sessions and membership-based access</small></div>
         <div><span className="eyebrow">AI PROVIDER</span><strong>{settings?.aiProvider ?? "Loading…"}</strong><small>{settings?.aiConfigured ? "Server-side model configured" : "AI environment config required"} · Optional. Current model provider integration: Ollama only.</small></div>
-        <div><span className="eyebrow">MONITORING</span><strong>{settings?.scheduledMonitoring ? "Scheduler enabled" : "On demand"}</strong><small>Checks run locally; no external monitor</small></div>
+        <div><span className="eyebrow">MONITORING</span><strong>{settings?.scheduledMonitoring ? "Scheduler enabled" : "On demand"}</strong><small>Availability and outside security checks run on a schedule</small></div>
       </section>}
 
       {message && <div className="toast" role="status">{message}<button aria-label="Dismiss message" onClick={() => setMessage("")}>×</button></div>}
 
       <footer className="footer">
-        <span>AI WEBSITE DOCTOR <span className="footer-dot">•</span> LOCAL-FIRST MONITORING</span>
-        <span>Scheduled checks are local. Approved repair proposals are not executed.</span>
+        <span>AI WEBSITE DOCTOR <span className="footer-dot">•</span> MONITORING &amp; REPAIR</span>
+        <span>Every repair keeps a recovery point and is verified afterwards.</span>
       </footer>
     </main>
   );

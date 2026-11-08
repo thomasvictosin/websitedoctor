@@ -687,3 +687,53 @@ small.diagnostic-limit { display: block; margin-top: 12px; font-size: 10px; line
 .hosting-details > summary { padding: 12px 14px; color: #126d69; font-size: 11px; font-weight: 700; cursor: pointer; }
 .hosting-details[open] > summary { border-bottom: 1px solid #edf1f3; }
 .hosting-details > .site-hosting-panel { padding: 0 2px 2px; }
+
+/* Website rows: row-wide extras (scan status, history) span the whole row */
+.site-row > .diagnostic-limit, .site-row > .check-history { grid-column: 1 / -1; margin-top: 4px; }
+
+/* Repairs & automation */
+.repair-centre { display: grid; gap: 16px; margin-top: 4px; }
+.capability-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; padding: 0 20px; }
+.capability-card { display: grid; align-content: start; gap: 6px; min-width: 0; padding: 13px 14px; border: 1px solid #e8edef; border-radius: 9px; background: #fbfcfd; }
+.capability-card strong { color: var(--ink); font-size: 12px; }
+.capability-card p { margin: 0; color: #607383; font-size: 11px; line-height: 1.5; }
+.capability-card small { color: #6f7d8b; font-size: 10px; line-height: 1.45; }
+.capability-card b { color: #46546a; }
+.capability-note { margin: 12px 20px 18px; color: #6f7d8b; font-size: 10px; }
+.run-progress-list li { grid-template-columns: 16px minmax(0, 1fr) auto; }
+.decision-list { padding: 0 20px 6px; }
+.batch-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin: 6px 20px 18px; padding: 11px 14px; border: 1px solid #cfe5e2; border-radius: 9px; background: #f0f8f7; color: #29545a; font-size: 11px; }
+.batch-repair-select { display: inline-flex; align-items: center; gap: 6px; color: #5f6f7f; font-size: 10px; }
+.automation-table { display: grid; padding: 0 20px 18px; }
+.automation-row { display: grid; grid-template-columns: minmax(160px, 1.4fr) repeat(3, minmax(110px, 1fr)); align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid #f0f3f5; }
+.automation-head { border-top: 0; color: #8b97a5; font-size: 9px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; }
+.automation-site { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.automation-site strong { color: var(--ink); font-size: 12px; overflow-wrap: anywhere; }
+.automation-label { display: none; }
+.history-toolbar { padding: 0 20px 12px; }
+.history-list { margin: 0 20px 12px; }
+.history-list li { grid-template-columns: auto minmax(0, 1fr) auto; }
+.advanced-panel > summary { display: grid; gap: 4px; padding: 18px 20px; cursor: pointer; list-style: none; }
+.advanced-panel > summary::-webkit-details-marker { display: none; }
+.advanced-panel > summary strong { color: var(--ink); font-size: 14px; }
+.advanced-panel > summary::after { content: "Show"; justify-self: start; color: #126d69; font-size: 10px; font-weight: 700; }
+.advanced-panel[open] > summary::after { content: "Hide"; }
+.advanced-panel > .repair-authorization-panel { padding: 0 20px 20px; }
+.advanced-intro { margin: 0 0 12px; padding: 11px 13px; border: 1px solid #e6edf0; border-radius: 8px; background: #f7fafb; color: #5f6f7f; font-size: 11px; }
+@media (max-width: 760px) {
+  .automation-head { display: none; }
+  .automation-row { grid-template-columns: 1fr; gap: 6px; }
+  .automation-cell { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .automation-label { display: inline; color: #5f6f7f; font-size: 11px; }
+  .capability-grid, .automation-table, .decision-list { padding-inline: 12px; }
+  .history-list { margin-inline: 12px; }
+}
+.switch { display: inline-flex; align-items: center; gap: 8px; padding: 4px 6px 4px 4px; border: 0; border-radius: 999px; background: transparent; color: #6f7d8b; font-size: 11px; font-weight: 700; cursor: pointer; }
+.switch:disabled { cursor: not-allowed; opacity: .6; }
+.switch-track { position: relative; width: 34px; height: 20px; border-radius: 999px; background: #d5dde2; transition: background .15s; }
+.switch-knob { position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px #17344733; transition: transform .15s; }
+.switch-on { color: #126d69; }
+.switch-on .switch-track { background: var(--purple); }
+.switch-on .switch-knob { transform: translateX(14px); }
+.switch:focus-visible { outline: 3px solid #9c8fea; outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .switch-track, .switch-knob { transition: none; } }
