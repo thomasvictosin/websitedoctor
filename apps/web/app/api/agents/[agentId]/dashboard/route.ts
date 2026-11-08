@@ -25,7 +25,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ agen
       orderBy: [{ status: "asc" }, { lastSeenAt: "desc" }],
       take: 50,
       select: {
-        id: true, fingerprint: true, title: true, description: true, severity: true, status: true, source: true, lastSeenAt: true, diagnosis: true,
+        id: true, fingerprint: true, title: true, description: true, severity: true, status: true, source: true, lastSeenAt: true, resolvedAt: true, diagnosis: true,
         repairs: {
           orderBy: { createdAt: "desc" }, take: 5,
           select: {

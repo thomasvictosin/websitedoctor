@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AI Website Doctor
  * Description: Connects this WordPress site to a locally hosted AI Website Doctor for diagnostics and explicitly approved repairs.
- * Version: 0.6.2
+ * Version: 0.6.3
  * Requires at least: 6.2
  * Requires PHP: 8.0
  * License: GPL-2.0-or-later
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('AWD_VERSION', '0.6.2');
+define('AWD_VERSION', '0.6.3');
 define('AWD_OPTION', 'ai_website_doctor_settings');
 define('AWD_RECOVERY_OPTION', 'ai_website_doctor_recovery_points');
 define('AWD_SYNC_OPTION', 'ai_website_doctor_sync_state');
@@ -502,6 +502,18 @@ function awd_render_admin_page(): void
         .awd-issue details { margin:10px 0; }.awd-issue pre { overflow:auto; max-height:340px; padding:10px; background:#f6f7f7; }
         .awd-issue form { display:inline-block; margin:4px 6px 0 0; }
         .awd-muted { color:#646970; }
+        .awd-issue h3 { margin:0 0 6px; font-size:14px; }
+        .awd-issue-description { margin:0 0 8px; color:#3c434a; }
+        .awd-issue-details > summary { cursor:pointer; color:#2271b1; font-weight:600; }
+        .awd-update-list { margin:8px 0 0; }
+        .awd-update-list li { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px 12px; margin:0; padding:7px 0; border-top:1px solid #f0f0f1; }
+        .awd-update-list li form { margin:0; }
+        .awd-resolved { max-width:1100px; margin:14px 0; padding:10px 14px; border:1px solid #dcdcde; border-radius:4px; background:#fff; }
+        .awd-resolved > summary { cursor:pointer; font-weight:600; }
+        .awd-resolved ul { margin:8px 0 0; }
+        .awd-resolved li { margin:0; padding:5px 0; border-top:1px solid #f0f0f1; }
+        .awd-resolved-mark { color:#00a32a; font-weight:700; }
+        .awd-board-empty { max-width:1100px; padding:12px; border:1px dashed #c3c4c7; border-radius:4px; color:#646970; text-align:center; }
     </style>
     <?php
 }
@@ -797,73 +809,114 @@ function awd_render_central_issues(array $settings, $dashboard): void
         echo '<p class="awd-muted">Central issue history is unavailable until the connected service responds.</p>';
         return;
     }
-    if (!$dashboard['issues']) { echo '<p>No centrally recorded WordPress findings.</p>'; return; }
-    foreach ($dashboard['issues'] as $issue) {
-        if (!is_array($issue)) continue;
-        $severity = sanitize_html_class((string) ($issue['severity'] ?? 'medium'));
-        $diagnosis = is_array($issue['diagnosis'] ?? null) ? $issue['diagnosis'] : array();
-        $repairs = is_array($issue['repairs'] ?? null) ? $issue['repairs'] : array();
-        echo '<article class="awd-issue awd-issue-' . esc_attr($severity) . '">';
-        echo '<h3>' . esc_html((string) ($issue['title'] ?? 'Issue')) . ' <span class="awd-muted">' . esc_html(strtoupper($severity)) . ' · ' . esc_html((string) ($issue['status'] ?? 'open')) . '</span></h3>';
-        echo '<p>' . esc_html((string) ($issue['description'] ?? '')) . '</p>';
-        echo '<p class="awd-muted">Last detected ' . esc_html(awd_plugin_time($issue['lastSeenAt'] ?? null)) . '</p>';
-        awd_render_fix_button($issue);
-        if (!empty($diagnosis['diagnosis']) && is_array($diagnosis['diagnosis'])) {
-            $result = $diagnosis['diagnosis'];
-            echo '<h4>Central AI diagnosis</h4><p><strong>' . esc_html((string) ($result['probableRootCause']['claim'] ?? $result['description'] ?? 'Diagnosis recorded')) . '</strong></p>';
-            if (!empty($result['recommendedFix']['description'])) echo '<p><strong>Recommended fix:</strong> ' . esc_html((string) $result['recommendedFix']['description']) . '</p>';
-            echo '<details><summary>Full central diagnosis and evidence</summary><pre>' . esc_html(wp_json_encode($result, JSON_PRETTY_PRINT)) . '</pre></details>';
-        } elseif (($diagnosis['status'] ?? '') === 'unavailable') {
-            echo '<p class="awd-muted">Central AI analysis unavailable: ' . esc_html((string) ($diagnosis['error'] ?? 'No model response was recorded.')) . '</p>';
-        } else {
-            echo '<p class="awd-muted">No central AI diagnosis has been recorded for this finding.</p>';
+    $issues = array_values(array_filter($dashboard['issues'], 'is_array'));
+    if (!$issues) { echo '<p>No centrally recorded findings.</p>'; return; }
+    $rank = array('critical' => 4, 'high' => 3, 'medium' => 2, 'low' => 1);
+    $open = array_values(array_filter($issues, static function ($issue) { return ($issue['status'] ?? '') !== 'resolved'; }));
+    $resolved = array_values(array_filter($issues, static function ($issue) { return ($issue['status'] ?? '') === 'resolved'; }));
+    usort($open, static function ($a, $b) use ($rank) {
+        return (($rank[$b['severity'] ?? ''] ?? 0) <=> ($rank[$a['severity'] ?? ''] ?? 0)) ?: strcmp((string) ($b['lastSeenAt'] ?? ''), (string) ($a['lastSeenAt'] ?? ''));
+    });
+    usort($resolved, static function ($a, $b) { return strcmp((string) ($b['resolvedAt'] ?? $b['lastSeenAt'] ?? ''), (string) ($a['resolvedAt'] ?? $a['lastSeenAt'] ?? '')); });
+    echo '<p class="awd-muted">' . esc_html(sprintf('%d open · %d resolved', count($open), count($resolved))) . '</p>';
+    if (!$open) echo '<p class="awd-board-empty">No open issues. Everything that was found has been resolved.</p>';
+    $updates = array_values(array_filter($open, static function ($issue) { return str_starts_with((string) ($issue['fingerprint'] ?? ''), 'wp:plugin-update:'); }));
+    $fold = count($updates) >= 2;
+    foreach ($open as $issue) {
+        if ($fold && str_starts_with((string) ($issue['fingerprint'] ?? ''), 'wp:plugin-update:')) continue;
+        awd_render_issue_card($settings, $issue);
+    }
+    if ($fold) {
+        echo '<article class="awd-issue awd-issue-low"><h3>' . esc_html(sprintf('%d plugin updates available', count($updates))) . ' <span class="awd-muted">LOW</span></h3>';
+        echo '<p class="awd-muted">Each update is verified against the official WordPress.org files and rolled back automatically if the site breaks.</p><ul class="awd-update-list">';
+        foreach ($updates as $issue) {
+            echo '<li><span>' . esc_html(preg_replace('/^Plugin update available:\s*/', '', (string) ($issue['title'] ?? ''))) . '</span>';
+            awd_render_fix_button($issue);
+            echo '</li>';
         }
-        foreach ($repairs as $repair) {
-            if (!is_array($repair)) continue;
-            $proposal = is_array($repair['proposal'] ?? null) ? $repair['proposal'] : array();
-            echo '<div class="awd-repair"><h4>Repair ' . esc_html((string) ($repair['status'] ?? '')) . ' · ' . esc_html((string) ($repair['risk'] ?? 'unknown')) . ' risk</h4>';
-            if (!empty($proposal['rationale'])) echo '<p>' . esc_html((string) $proposal['rationale']) . '</p>';
-            if (!empty($proposal['proposedChanges']) && is_array($proposal['proposedChanges'])) echo '<ul><li>' . implode('</li><li>', array_map('esc_html', $proposal['proposedChanges'])) . '</li></ul>';
-            if (!empty($proposal['manualGuidance']) && is_array($proposal['manualGuidance'])) echo '<p><strong>Manual remediation guidance · no changes will be executed</strong></p><ol><li>' . implode('</li><li>', array_map('esc_html', $proposal['manualGuidance'])) . '</li></ol>';
-            if (!empty($proposal['instructions']['steps']) && is_array($proposal['instructions']['steps'])) echo '<details><summary>Inspect proposed operations before approval</summary><pre>' . esc_html(wp_json_encode($proposal['instructions']['steps'], JSON_PRETTY_PRINT)) . '</pre></details>';
-            echo '<p>Approval: ' . esc_html((string) ($repair['approvalStatus'] ?? 'pending')) . ' · Execution: ' . esc_html((string) ($repair['executionStatus'] ?? 'not started')) . ' · Verification: ' . esc_html((string) ($repair['verificationStatus'] ?? 'not started')) . ' · Rollback: ' . esc_html((string) ($repair['rollbackStatus'] ?? 'not requested')) . '</p>';
-            if (!empty($repair['approvals']) && is_array($repair['approvals'])) echo '<details><summary>Shared approval records</summary><ol><li>' . implode('</li><li>', array_map(static function ($approval) { return esc_html((string) ($approval['decision'] ?? 'decision') . ' · ' . awd_plugin_time($approval['createdAt'] ?? null) . (!empty($approval['comment']) ? ' · ' . (string) $approval['comment'] : '')); }, $repair['approvals'])) . '</li></ol></details>';
-            if (!empty($repair['verificationResults']) && is_array($repair['verificationResults'])) {
-                echo '<details><summary>Central verification results</summary>';
-                foreach ($repair['verificationResults'] as $verification) if (is_array($verification)) echo '<p><strong>' . esc_html((string) ($verification['status'] ?? 'unknown')) . '</strong> via ' . esc_html((string) ($verification['method'] ?? 'verification')) . ' · ' . esc_html(awd_plugin_time($verification['createdAt'] ?? null)) . '</p><pre>' . esc_html(wp_json_encode($verification['result'] ?? null, JSON_PRETTY_PRINT)) . '</pre>';
-                echo '</details>';
+        echo '</ul></article>';
+    }
+    if ($resolved) {
+        echo '<details class="awd-resolved"><summary>' . esc_html(sprintf('Resolved issues (%d)', count($resolved))) . '</summary><ul>';
+        foreach (array_slice($resolved, 0, 20) as $issue) {
+            echo '<li><span class="awd-resolved-mark">✓</span> ' . esc_html((string) ($issue['title'] ?? 'Issue')) . ' <span class="awd-muted">· ' . esc_html((string) ($issue['severity'] ?? '')) . ' · resolved ' . esc_html(awd_plugin_time($issue['resolvedAt'] ?? $issue['lastSeenAt'] ?? null)) . '</span></li>';
+        }
+        echo '</ul>' . (count($resolved) > 20 ? '<p class="awd-muted">' . esc_html(sprintf('Showing the latest 20 of %d. The full history is in the central app.', count($resolved))) . '</p>' : '') . '</details>';
+    }
+}
+
+/** One open issue: a compact card with its fix; diagnosis, repairs and other actions under Details. */
+function awd_render_issue_card(array $settings, array $issue): void
+{
+    $severity = sanitize_html_class((string) ($issue['severity'] ?? 'medium'));
+    echo '<article class="awd-issue awd-issue-' . esc_attr($severity) . '">';
+    echo '<h3>' . esc_html((string) ($issue['title'] ?? 'Issue')) . ' <span class="awd-muted">' . esc_html(strtoupper($severity)) . ' · ' . esc_html(awd_plugin_time($issue['lastSeenAt'] ?? null)) . '</span></h3>';
+    echo '<p class="awd-issue-description">' . esc_html((string) ($issue['description'] ?? '')) . '</p>';
+    awd_render_fix_button($issue);
+    echo '<details class="awd-issue-details"><summary>Details &amp; more actions</summary>';
+    awd_render_issue_details($settings, $issue);
+    echo '</details></article>';
+}
+
+function awd_render_issue_details(array $settings, array $issue): void
+{
+    $severity = sanitize_html_class((string) ($issue['severity'] ?? 'medium'));
+    $diagnosis = is_array($issue['diagnosis'] ?? null) ? $issue['diagnosis'] : array();
+    $repairs = is_array($issue['repairs'] ?? null) ? $issue['repairs'] : array();
+    if (!empty($diagnosis['diagnosis']) && is_array($diagnosis['diagnosis'])) {
+        $result = $diagnosis['diagnosis'];
+        echo '<h4>Central AI diagnosis</h4><p><strong>' . esc_html((string) ($result['probableRootCause']['claim'] ?? $result['description'] ?? 'Diagnosis recorded')) . '</strong></p>';
+        if (!empty($result['recommendedFix']['description'])) echo '<p><strong>Recommended fix:</strong> ' . esc_html((string) $result['recommendedFix']['description']) . '</p>';
+        echo '<details><summary>Full central diagnosis and evidence</summary><pre>' . esc_html(wp_json_encode($result, JSON_PRETTY_PRINT)) . '</pre></details>';
+    } elseif (($diagnosis['status'] ?? '') === 'unavailable') {
+        echo '<p class="awd-muted">Central AI analysis unavailable: ' . esc_html((string) ($diagnosis['error'] ?? 'No model response was recorded.')) . '</p>';
+    } else {
+        echo '<p class="awd-muted">No central AI diagnosis has been recorded for this finding.</p>';
+    }
+    foreach ($repairs as $repair) {
+        if (!is_array($repair)) continue;
+        $proposal = is_array($repair['proposal'] ?? null) ? $repair['proposal'] : array();
+        echo '<div class="awd-repair"><h4>Repair ' . esc_html((string) ($repair['status'] ?? '')) . ' · ' . esc_html((string) ($repair['risk'] ?? 'unknown')) . ' risk</h4>';
+        if (!empty($proposal['rationale'])) echo '<p>' . esc_html((string) $proposal['rationale']) . '</p>';
+        if (!empty($proposal['proposedChanges']) && is_array($proposal['proposedChanges'])) echo '<ul><li>' . implode('</li><li>', array_map('esc_html', $proposal['proposedChanges'])) . '</li></ul>';
+        if (!empty($proposal['manualGuidance']) && is_array($proposal['manualGuidance'])) echo '<p><strong>Manual remediation guidance · no changes will be executed</strong></p><ol><li>' . implode('</li><li>', array_map('esc_html', $proposal['manualGuidance'])) . '</li></ol>';
+        if (!empty($proposal['instructions']['steps']) && is_array($proposal['instructions']['steps'])) echo '<details><summary>Inspect proposed operations before approval</summary><pre>' . esc_html(wp_json_encode($proposal['instructions']['steps'], JSON_PRETTY_PRINT)) . '</pre></details>';
+        echo '<p>Approval: ' . esc_html((string) ($repair['approvalStatus'] ?? 'pending')) . ' · Execution: ' . esc_html((string) ($repair['executionStatus'] ?? 'not started')) . ' · Verification: ' . esc_html((string) ($repair['verificationStatus'] ?? 'not started')) . ' · Rollback: ' . esc_html((string) ($repair['rollbackStatus'] ?? 'not requested')) . '</p>';
+        if (!empty($repair['approvals']) && is_array($repair['approvals'])) echo '<details><summary>Shared approval records</summary><ol><li>' . implode('</li><li>', array_map(static function ($approval) { return esc_html((string) ($approval['decision'] ?? 'decision') . ' · ' . awd_plugin_time($approval['createdAt'] ?? null) . (!empty($approval['comment']) ? ' · ' . (string) $approval['comment'] : '')); }, $repair['approvals'])) . '</li></ol></details>';
+        if (!empty($repair['verificationResults']) && is_array($repair['verificationResults'])) {
+            echo '<details><summary>Central verification results</summary>';
+            foreach ($repair['verificationResults'] as $verification) if (is_array($verification)) echo '<p><strong>' . esc_html((string) ($verification['status'] ?? 'unknown')) . '</strong> via ' . esc_html((string) ($verification['method'] ?? 'verification')) . ' · ' . esc_html(awd_plugin_time($verification['createdAt'] ?? null)) . '</p><pre>' . esc_html(wp_json_encode($verification['result'] ?? null, JSON_PRETTY_PRINT)) . '</pre>';
+            echo '</details>';
+        }
+        if (!empty($repair['events']) && is_array($repair['events'])) echo '<details><summary>Shared repair history (' . count($repair['events']) . ' events)</summary><ol><li>' . implode('</li><li>', array_map(static function ($event) { return esc_html(str_replace('_', ' ', (string) ($event['eventType'] ?? 'event')) . ' · ' . awd_plugin_time($event['createdAt'] ?? null) . ' · ' . (string) ($event['actor'] ?? '')); }, $repair['events'])) . '</li></ol></details>';
+        if (($repair['status'] ?? '') === 'pending_approval') {
+            if (!empty($repair['operationIds'])) {
+                echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="awd_execute"><input type="hidden" name="repair_id" value="' . esc_attr((string) $repair['id']) . '">';
+                wp_nonce_field('awd_execute_' . $repair['id']);
+                submit_button('Approve & apply now', 'primary', 'submit', false);
+                echo '</form>';
             }
-            if (!empty($repair['events']) && is_array($repair['events'])) echo '<details><summary>Shared repair history (' . count($repair['events']) . ' events)</summary><ol><li>' . implode('</li><li>', array_map(static function ($event) { return esc_html(str_replace('_', ' ', (string) ($event['eventType'] ?? 'event')) . ' · ' . awd_plugin_time($event['createdAt'] ?? null) . ' · ' . (string) ($event['actor'] ?? '')); }, $repair['events'])) . '</li></ol></details>';
-            if (($repair['status'] ?? '') === 'pending_approval') {
-                if (!empty($repair['operationIds'])) {
-                    echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="awd_execute"><input type="hidden" name="repair_id" value="' . esc_attr((string) $repair['id']) . '">';
-                    wp_nonce_field('awd_execute_' . $repair['id']);
-                    submit_button('Approve & apply now', 'primary', 'submit', false);
-                    echo '</form>';
-                }
-                foreach (array('approve' => 'Acknowledge manual plan', 'reject' => 'Reject proposal') as $decision => $label) {
-                    if ($decision === 'approve' && !empty($repair['operationIds'])) continue;
-                    echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="awd_decide_repair"><input type="hidden" name="repair_id" value="' . esc_attr((string) $repair['id']) . '"><input type="hidden" name="decision" value="' . esc_attr($decision) . '">';
-                    wp_nonce_field('awd_decide_repair_' . $repair['id']);
-                    submit_button($label, $decision === 'approve' ? 'primary' : 'secondary', 'submit', false);
-                    echo '</form>';
-                }
+            foreach (array('approve' => 'Acknowledge manual plan', 'reject' => 'Reject proposal') as $decision => $label) {
+                if ($decision === 'approve' && !empty($repair['operationIds'])) continue;
+                echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="awd_decide_repair"><input type="hidden" name="repair_id" value="' . esc_attr((string) $repair['id']) . '"><input type="hidden" name="decision" value="' . esc_attr($decision) . '">';
+                wp_nonce_field('awd_decide_repair_' . $repair['id']);
+                submit_button($label, $decision === 'approve' ? 'primary' : 'secondary', 'submit', false);
+                echo '</form>';
             }
-            echo '</div>';
         }
-        if (($issue['status'] ?? '') !== 'resolved' && !array_filter($repairs, static function ($repair) { return is_array($repair) && in_array($repair['status'] ?? '', array('pending_approval', 'approved', 'executing', 'in_progress'), true); })) {
-            echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="awd_propose_repair"><input type="hidden" name="issue_id" value="' . esc_attr((string) ($issue['id'] ?? '')) . '">';
-            wp_nonce_field('awd_propose_repair_' . (string) ($issue['id'] ?? ''));
-            submit_button('Request central remediation plan', 'secondary', 'submit', false);
-            echo '</form>';
-        }
-        if (empty($diagnosis['diagnosis'])) {
-            echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="awd_analyze_issue"><input type="hidden" name="issue_id" value="' . esc_attr((string) ($issue['id'] ?? '')) . '">';
-            wp_nonce_field('awd_analyze_issue_' . (string) ($issue['id'] ?? ''));
-            submit_button('Analyze with central AI', 'secondary', 'submit', false);
-            echo '</form>';
-        }
-        echo '</article>';
+        echo '</div>';
+    }
+    if (($issue['status'] ?? '') !== 'resolved' && !array_filter($repairs, static function ($repair) { return is_array($repair) && in_array($repair['status'] ?? '', array('pending_approval', 'approved', 'executing', 'in_progress'), true); })) {
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="awd_propose_repair"><input type="hidden" name="issue_id" value="' . esc_attr((string) ($issue['id'] ?? '')) . '">';
+        wp_nonce_field('awd_propose_repair_' . (string) ($issue['id'] ?? ''));
+        submit_button('Request central remediation plan', 'secondary', 'submit', false);
+        echo '</form>';
+    }
+    if (empty($diagnosis['diagnosis'])) {
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '"><input type="hidden" name="action" value="awd_analyze_issue"><input type="hidden" name="issue_id" value="' . esc_attr((string) ($issue['id'] ?? '')) . '">';
+        wp_nonce_field('awd_analyze_issue_' . (string) ($issue['id'] ?? ''));
+        submit_button('Analyze with central AI', 'secondary', 'submit', false);
+        echo '</form>';
     }
 }
 
@@ -1263,12 +1316,27 @@ function awd_render_diagnostics(array $diagnostics): void
         )); ?>. Read-only; <em>Collect and sync diagnostics</em> reruns it (otherwise every 6 hours).</p>
         <p><strong>PHP log evidence:</strong> <?php echo esc_html(($diagnostics['phpErrorLog']['status'] ?? 'disabled') . ' · ' . (string) count($diagnostics['phpErrors'] ?? array()) . ' parsed entries, maximum 20'); ?>. Only the explicitly authorized, bounded WordPress debug.log excerpt is inspected; system PHP-FPM/web-server logs are not accessible to this plugin.</p>
         <?php if ($diagnostics['issues']) : ?>
-            <ul>
-                <?php foreach ($diagnostics['issues'] as $issue) : ?>
-                    <li><strong><?php echo esc_html(strtoupper($issue['severity'])); ?>:</strong>
-                        <?php echo esc_html($issue['title'] . ' — ' . $issue['description']); ?></li>
-                <?php endforeach; ?>
-            </ul>
+            <?php
+            $urgent = array_filter($diagnostics['issues'], static function ($issue) { return in_array($issue['severity'] ?? '', array('critical', 'high'), true); });
+            $other = array_filter($diagnostics['issues'], static function ($issue) { return !in_array($issue['severity'] ?? '', array('critical', 'high'), true); });
+            ?>
+            <?php if ($urgent) : ?>
+                <ul>
+                    <?php foreach ($urgent as $issue) : ?>
+                        <li><strong><?php echo esc_html(strtoupper($issue['severity'])); ?>:</strong>
+                            <?php echo esc_html($issue['title'] . ' — ' . $issue['description']); ?></li>
+                    <?php endforeach; ?>
+                </ul>
+            <?php endif; ?>
+            <?php if ($other) : ?>
+                <details><summary><?php echo esc_html(sprintf('%d lower-priority finding(s)', count($other))); ?></summary>
+                    <ul>
+                        <?php foreach ($other as $issue) : ?>
+                            <li><strong><?php echo esc_html(strtoupper($issue['severity'])); ?>:</strong> <?php echo esc_html($issue['title']); ?></li>
+                        <?php endforeach; ?>
+                    </ul>
+                </details>
+            <?php endif; ?>
         <?php else : ?>
             <p>No issues were detected by these basic checks.</p>
         <?php endif; ?>

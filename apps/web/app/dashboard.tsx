@@ -1,10 +1,11 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState, type ReactNode } from "react";
 import { HostingManager } from "./hosting-manager";
 import { BackupsManager } from "./backups-manager";
 import { CleanupManager } from "./cleanup-manager";
 import { useConfirm } from "./confirm-dialog";
+import { IssueBoard, isOpenIssue } from "./issue-board";
 import { CloudflarePanel, ProtectionManager } from "./protection-manager";
 import { McpAccessManager } from "./mcp-access-manager";
 import { parseAssistantRepairPermissionCommand } from "@/lib/repair-assistant-intent";
@@ -113,6 +114,7 @@ type Issue = {
     diagnosis?: StructuredDiagnosis | null;
   } | null;
   lastSeenAt: string;
+  resolvedAt?: string | null;
   website: { id: string; name: string; url: string };
   repairs: Array<{
     id: string;
@@ -236,6 +238,9 @@ export default function Home() {
   const [busy, setBusy] = useState<string | null>(null);
   const dialogs = useConfirm();
   const [fixInProgress, setFixInProgress] = useState(false);
+  const [siteQuery, setSiteQuery] = useState("");
+  const [siteFilter, setSiteFilter] = useState<"all" | "attention" | "healthy" | "disconnected">("all");
+  const [siteSort, setSiteSort] = useState<"worst" | "name" | "checked">("worst");
   const [message, setMessage] = useState("");
   const [scanProgress, setScanProgress] = useState<Record<string, { scanId: string; status: string; withAi: boolean }>>({});
   const [history, setHistory] = useState<Record<string, Check[]>>({});
@@ -741,6 +746,128 @@ export default function Home() {
     return { active: false, text: "The fix did not verify; open View Repair Details below for what remains." };
   }
 
+  /** Primary action shown on a compact issue card: the one-click fix and its progress. */
+  function renderIssuePrimary(issue: Issue) {
+    return <>
+                  {oneClickFix(issue) && (
+                    <button className="button primary" onClick={() => fixIssue(issue)} disabled={busy !== null || Boolean(activeRunForSite(issue.website.id) && oneClickFix(issue)!.confirm)}
+                      title={activeRunForSite(issue.website.id) ? `The site is working on “${activeRunForSite(issue.website.id)!.proposal.issue}”; it handles one change at a time.` : undefined}>
+                      {busy === `fix:${issue.id}` ? "Approving…" : issue.repairs.some((repair) => (repair.proposal as { kind?: string }).kind === "compromise_cleanup" && ["approved", "executing"].includes(repair.status)) ? "Fix in progress…" : activeRunForSite(issue.website.id) && oneClickFix(issue)!.confirm ? "Site busy…" : oneClickFix(issue)!.label}
+                    </button>
+                  )}
+                  {(() => {
+                    const progress = fixProgress(issue);
+                    return progress ? <span className="fix-progress" role="status">{progress.active && <span className="spinner" aria-hidden="true" />}{progress.text}</span> : null;
+                  })()}
+    </>;
+  }
+
+  /** Everything else about an issue, shown under "Details & more actions". */
+  function renderIssueDetails(issue: Issue) {
+    return <div className="issue-detail-body">
+                <small className="issue-page">Affected page: {issue.diagnosis?.diagnosis?.affectedPage ?? "Not identified from available evidence"}</small>
+                {issue.evidence !== null && issue.evidence !== undefined && (
+                  <details className="issue-evidence">
+                    <summary>Diagnostic evidence</summary>
+                    <pre>{JSON.stringify(issue.evidence, null, 2)}</pre>
+                  </details>
+                )}
+                {issue.diagnosis?.diagnosis && (
+                  <div className="issue-ai-diagnosis">
+                    <strong>Central diagnosis · {issue.diagnosis.diagnosis.severity} · {diagnosisConfidenceLabel(issue.diagnosis.diagnosis.confidence)}</strong>
+                    <DiagnosisDetails diagnosis={issue.diagnosis.diagnosis} />
+                  </div>
+                )}
+                {recommendations[issue.id] && <div className="issue-ai-diagnosis">
+                  <strong>Evidence-based recommendation · {recommendations[issue.id].kind === "supported_candidate" ? "supported change candidate" : "manual steps"} · {recommendations[issue.id].risk} risk</strong>
+                  <p>{recommendations[issue.id].summary}</p>
+                  <small>How this was generated: fixed rules matched this finding’s detector/fingerprint to the recorded browser or WordPress evidence. It is a bounded checklist, not an AI inference or a guaranteed root cause. If no exact safe rule matched, it returns general manual guidance.</small>
+                  <ul>{recommendations[issue.id].proposedChanges.map((change, index) => <li key={index}>{change}</li>)}</ul>
+                  {recommendations[issue.id].manualGuidance.length > 0 && <ol>{recommendations[issue.id].manualGuidance.map((step, index) => <li key={index}>{step}</li>)}</ol>}
+                  <p><strong>Verify:</strong> {recommendations[issue.id].verificationPlan.join(" ")}</p>
+                  <small>This recommendation is generated from stored evidence without AI. Any app-executed change still requires an eligible operation, recovery point, and your approval.</small>
+                </div>}
+                <small className="repair-availability">Repair availability: {issue.repairs.some((repair) => repair.operationIds.length > 0 && repair.proposal.executionAvailable)
+                  ? "A supported operation is available for review."
+                  : issue.repairs.length > 0
+                    ? "No automatic operation is supported for the current proposal; manual guidance is available below."
+                    : "Not assessed yet. Review a repair plan to check for a supported, evidence backed operation."}</small>
+                {issue.toolIds.length > 0 && <small className="tool-evidence">Relevant evidence: {issue.toolIds.join(", ")}</small>}
+                <div className="issue-actions">
+                  <button className="button ghost" onClick={() => loadRecommendation(issue)} disabled={busy !== null}>
+                    {busy === `recommend:${issue.id}` ? "Preparing…" : recommendations[issue.id] ? "Refresh Recommendation" : "Get Recommendation (No AI)"}
+                  </button>
+                  <button className="button ghost" onClick={() => diagnoseIssue(issue, false)} disabled={busy !== null}>
+                    {busy === `issue-diagnose:${issue.id}` ? "Diagnosing…" : "Diagnose Without AI"}
+                  </button>
+                  <button className="button ghost" onClick={() => diagnoseIssue(issue, true)} disabled={busy !== null}>
+                    {busy === `issue-diagnose:${issue.id}` ? "Analyzing…" : "Analyze with AI (Optional)"}
+                  </button>
+                  {issue.status === "open" && <button className="button ghost" onClick={() => updateIssue(issue, "acknowledged")}>Acknowledge</button>}
+                  {issue.status !== "resolved" && <button className="button ghost" onClick={() => updateIssue(issue, "resolved")}>Resolve</button>}
+                  <button className="button secondary" onClick={() => proposeRepair(issue)} disabled={busy !== null || issue.repairs.some((repair) => ["pending_approval", "approved", "executing", "in_progress"].includes(repair.status))}>
+                    {busy === `repair:${issue.id}` ? "Preparing…" : "Review repair plan"}
+                  </button>
+                </div>
+                {issue.repairs.map((repair) => (
+                  <details className="repair-card issue-repair-details" key={repair.id}>
+                    <summary>View Repair Details · {repair.risk} risk · {repair.status.replaceAll("_", " ")}</summary>
+                    <p>{repair.proposal.rationale}</p>
+                    {repair.proposal.expectedImpact && <p><strong>Expected impact:</strong> {repair.proposal.expectedImpact}</p>}
+                    {repair.proposal.recoveryAvailability && <p><strong>Undo:</strong> {repair.proposal.recoveryAvailability}</p>}
+                    {repair.status === "rollback_required" && <p className="repair-limitation"><strong>Recovery needed:</strong> The plugin could not confirm its operation-specific undo. Review the execution and verification evidence below; use your existing site recovery process if manual recovery is needed.</p>}
+                    <ul>{repair.proposal.proposedChanges.map((change, index) => <li key={index}>{change}</li>)}</ul>
+                    {repair.proposal.manualGuidance && repair.proposal.manualGuidance.length > 0 && <div><strong>Manual remediation guidance · no changes will be executed</strong><ol>{repair.proposal.manualGuidance.map((step, index) => <li key={index}>{step}</li>)}</ol></div>}
+                    <RepairApprovalDetails repair={repair} />
+                    <small>Operations: {repair.operationIds.length > 0 ? repair.operationIds.join(", ") : "No executable allowlisted operation"}</small>
+                    <small>Permissions: {repair.requiredPermissions.join(", ")} · Initiated from {repair.initiatingInterface}</small>
+                    <small>Approval: {repair.approvalStatus} · Backup: {repair.backupStatus} · Execution: {repair.executionStatus} · Verification: {repair.verificationStatus} · Rollback: {repair.rollbackStatus}</small>
+                    {!repair.proposal.hostingRequest && <small>Queued repairs execute on the connected site’s next WordPress poll. WP-Cron polling is traffic-triggered, so low-traffic sites may take longer.</small>}
+                    {repair.events.length > 0 && (
+                      <details>
+                        <summary>Repair history ({repair.events.length} events)</summary>
+                        <ol>{repair.events.map((event) => (
+                          <li key={event.id}>{event.eventType.replaceAll("_", " ")} · {event.actor} · {new Date(event.createdAt).toLocaleString()}</li>
+                        ))}</ol>
+                      </details>
+                    )}
+                    {(repair.approvals?.length || repair.verificationResults?.length) ? <details><summary>Approvals and verification evidence</summary>
+                      {repair.approvals?.map((approval) => <p key={approval.id}>Approval: {approval.decision} · {new Date(approval.createdAt).toLocaleString()}{approval.comment ? ` · ${approval.comment}` : ""}</p>)}
+                      {repair.verificationResults?.map((verification) => <div key={verification.id}><p>Verification: {verification.status} via {verification.method} · {new Date(verification.createdAt).toLocaleString()}</p><pre>{JSON.stringify(verification.result, null, 2)}</pre></div>)}
+                    </details> : null}
+                    {repair.status === "pending_approval" && (
+                      <div className="issue-actions">
+                        {repair.operationIds.length > 0 && repair.proposal.executionAvailable
+                          ? <button className="button primary" onClick={() => decideRepair(repair.id, "approve_and_apply")} disabled={busy !== null}>Fix This Issue</button>
+                          : <button className="button secondary" onClick={() => decideRepair(repair.id, "approve")} disabled={busy !== null}>{repair.proposal.hostingRequest ? "Acknowledge review only" : "Acknowledge manual plan"}</button>}
+                        {repair.operationIds.length > 0 && repair.proposal.executionAvailable && <button className="button secondary" onClick={() => {
+                          setSelectedBatchRepairs((current) => current.includes(repair.id) ? current.filter((id) => id !== repair.id) : [...current, repair.id]);
+                          setMessage(selectedBatchRepairs.includes(repair.id) ? "Repair removed from the batch." : "Repair added to the batch. Open Repairs to review and authorize the selected batch.");
+                        }}>{selectedBatchRepairs.includes(repair.id) ? "Remove from Repair Batch" : "Add to Repair Batch"}</button>}
+                        <button className="button ghost" onClick={() => decideRepair(repair.id, "reject")} disabled={busy !== null}>Reject</button>
+                      </div>
+                    )}
+                  </details>
+                ))}
+    </div>;
+  }
+
+  async function updateAllPlugins(siteId: string) {
+    if (!await dialogs.confirm({ title: "Update all plugins on this website?", body: "Each WordPress.org plugin with an update is downloaded, checked against the official checksums, and rolled back automatically if the site breaks. Premium plugins are left for their vendors.", confirmLabel: "Update all" })) return;
+    setBusy(`updates:${siteId}`);
+    try {
+      const response = await fetch(`/api/sites/${siteId}/cleanup`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "update_plugins", confirm: true }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "The updates could not be approved.");
+      setMessage(`${result.stepCount} plugin update(s) approved. ${result.message}`);
+      await refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The updates could not be approved.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   /** Open a website's detail view on a tab from any page and bring it into view. */
   function openWebsiteDetail(siteId: string, tab: typeof websiteDetailTab = "overview") {
     setSelectedWebsiteId(siteId);
@@ -970,18 +1097,10 @@ export default function Home() {
   }
 
   const allChecks = websites.flatMap((site) => site.checks);
-  const latestCheckFor = (site: Website) => site.checks[0] ?? null;
-  const openIssuesFor = (site: Website) => issues.filter((issue) => issue.website.id === site.id && issue.status !== "resolved");
-  const healthyCount = websites.filter((site) =>
-    latestCheckFor(site)?.available && openIssuesFor(site).length === 0,
-  ).length;
-  const warningCount = websites.filter((site) =>
-    latestCheckFor(site)?.available && openIssuesFor(site).some((issue) => ["low", "medium"].includes(issue.severity)),
-  ).length;
-  const criticalCount = websites.filter((site) =>
-    latestCheckFor(site)?.available === false
-      || openIssuesFor(site).some((issue) => ["high", "critical"].includes(issue.severity)),
-  ).length;
+  // Each website is counted once, using the same rules as the website list.
+  const healthyCount = websites.filter((site) => siteHealth(site).key === "healthy" && siteHealth(site).open === 0).length;
+  const warningCount = websites.filter((site) => siteHealth(site).key === "healthy" && siteHealth(site).open > 0).length;
+  const criticalCount = websites.filter((site) => siteHealth(site).rank >= 2).length;
   const uptimeChecks = allChecks.filter((check) => check.statusCode !== null);
   const uptime = uptimeChecks.length > 0
     ? `${((uptimeChecks.filter((check) => check.available).length / uptimeChecks.length) * 100).toFixed(2)}%`
@@ -989,7 +1108,6 @@ export default function Home() {
   const recentChecks = websites.flatMap((site) => site.checks.map((check) => ({ site, check })))
     .sort((a, b) => Date.parse(b.check.checkedAt) - Date.parse(a.check.checkedAt))
     .slice(0, 6);
-  const recentIncidents = issues.filter((issue) => issue.status !== "resolved").slice(0, 5);
   const repairRows = issues.flatMap((issue) => issue.repairs.map((repair) => ({ issue, repair })))
     .sort((a, b) => Date.parse(b.repair.events.at(-1)?.createdAt ?? "") - Date.parse(a.repair.events.at(-1)?.createdAt ?? ""));
   const filteredRepairRows = repairRows.filter(({ issue, repair }) => {
@@ -1001,6 +1119,167 @@ export default function Home() {
       && (!repairToDate || (date && date < new Date(`${repairToDate}T23:59:59.999`)));
   });
   const selectedWebsite = websites.find((site) => site.id === selectedWebsiteId) ?? null;
+  /** Overall state of a website, worst first: hacked, offline, needs attention, not checked, healthy. */
+  function siteHealth(site: Website) {
+    const open = issues.filter((issue) => issue.website.id === site.id && isOpenIssue(issue));
+    const counts = { critical: 0, high: 0, medium: 0, low: 0 } as Record<string, number>;
+    for (const issue of open) counts[issue.severity] = (counts[issue.severity] ?? 0) + 1;
+    const check = site.checks[0];
+    if (compromiseFindings(site.id).length) return { key: "hacked", label: "Hacked", tone: "danger", rank: 4, counts, open: open.length };
+    if (check && !check.available) return { key: "offline", label: "Offline", tone: "danger", rank: 3, counts, open: open.length };
+    if (counts.critical + counts.high > 0) return { key: "attention", label: "Needs attention", tone: "warn", rank: 2, counts, open: open.length };
+    if (!check) return { key: "unchecked", label: "Not checked yet", tone: "off", rank: 1, counts, open: open.length };
+    return { key: "healthy", label: open.length ? "Minor issues" : "Healthy", tone: "on", rank: 0, counts, open: open.length };
+  }
+
+  function sortSites(list: Website[], order: "worst" | "name" | "checked") {
+    return [...list].sort((a, b) => order === "name" ? a.name.localeCompare(b.name)
+      : order === "checked" ? Date.parse(b.checks[0]?.checkedAt ?? "0") - Date.parse(a.checks[0]?.checkedAt ?? "0")
+      : siteHealth(b).rank - siteHealth(a).rank || siteHealth(b).open - siteHealth(a).open || a.name.localeCompare(b.name));
+  }
+
+  function pluginState(site: Website) {
+    const agent = site.wordpressAgent;
+    if (!agent || agent.revokedAt) return { text: "Plugin not connected", tone: "off" };
+    const minutes = Math.round((Date.now() - Date.parse(agent.lastSeenAt)) / 60_000);
+    const version = (agent.diagnostics as { site?: { pluginVersion?: string } } | null)?.site?.pluginVersion ?? agent.pluginVersion;
+    return { text: `Plugin ${version} · synced ${minutes < 1 ? "just now" : minutes < 60 ? `${minutes} min ago` : `${Math.round(minutes / 60)} h ago`}`, tone: minutes > 30 ? "warn" : "on" };
+  }
+
+  /** One compact, scannable row per website; actions beyond Open live in the More menu. */
+  function renderSiteRow(site: Website, compact: boolean) {
+    const check = site.checks[0];
+    const health = siteHealth(site);
+    const plugin = pluginState(site);
+    const currentScan = scanProgress[site.id];
+    return (
+      <article className={`site-row site-row-${health.key}`} key={site.id}>
+        <span className={`site-status ${check ? check.available ? "online" : "offline" : "unchecked"}`}>{check ? check.available ? "✓" : "!" : "·"}</span>
+        <div className="site-info">
+          <div className="site-title-line"><strong>{site.name}</strong><span className={`pill pill-${health.tone === "danger" ? "danger" : health.tone}`}>{health.label}</span></div>
+          <span>{site.url}</span>
+          <small>
+            {site.environmentType === "staging" ? "Staging" : "Production"}
+            {" · "}<span className={`plugin-state plugin-state-${plugin.tone}`}>{plugin.text}</span>
+            {check && ` · ${check.available ? `HTTP ${check.statusCode}` : check.error ?? "Unavailable"} · checked ${new Date(check.checkedAt).toLocaleString()}`}
+          </small>
+          {health.open > 0 && (
+            <div className="site-counts" aria-label="Open issues by severity">
+              {(["critical", "high", "medium", "low"] as const).filter((level) => health.counts[level]).map((level) => <span key={level} className={`severity severity-${level}`}>{health.counts[level]} {level}</span>)}
+            </div>
+          )}
+        </div>
+        <div className="site-actions">
+          {health.key === "hacked" && <button className="button danger" onClick={() => openWebsiteDetail(site.id, "cleanup")}>Clean up</button>}
+          <button className="button primary" onClick={() => openWebsiteDetail(site.id, health.open ? "overview" : "overview")}>Open</button>
+          {!compact && (
+            <details className="row-menu">
+              <summary className="button ghost">More</summary>
+              <div className="row-menu-items" role="menu">
+                <button role="menuitem" onClick={() => runScanWorkflow(site, false)} disabled={busy !== null}>{busy === `scan:${site.id}` ? "Queueing…" : "Scan now"}</button>
+                <button role="menuitem" onClick={() => runScanWorkflow(site, true)} disabled={busy !== null}>Scan + AI analysis</button>
+                <button role="menuitem" onClick={() => runSecurityCheck(site)} disabled={busy !== null}>{busy === `security:${site.id}` ? "Checking…" : "Security check"}</button>
+                <button role="menuitem" onClick={() => openWebsiteDetail(site.id, "cleanup")}>Clean up &amp; fixes</button>
+                <button role="menuitem" onClick={() => openWebsiteDetail(site.id, "protection")}>Protection</button>
+                <button role="menuitem" onClick={() => openWebsiteDetail(site.id, "settings")}>Settings &amp; connection</button>
+                <button role="menuitem" onClick={() => toggleHistory(site)}>{history[site.id] ? "Hide check history" : "Check history"}</button>
+                <button role="menuitem" className="danger-text" onClick={() => deleteWebsite(site)} disabled={busy !== null}>Remove website</button>
+              </div>
+            </details>
+          )}
+        </div>
+        {currentScan && <small className="diagnostic-limit">Latest scan: {currentScan.status.replaceAll("_", " ")}{currentScan.withAi ? " · AI analysis selected" : " · automated evidence only"}</small>}
+                    {history[site.id] && (
+          <div className="check-history">
+            <strong>Recent checks (up to 100)</strong>
+            {history[site.id].length === 0 ? <p>No checks have run yet.</p> : (
+              <ul>{history[site.id].map((item) => (
+                <li key={item.id}>
+                  <span className={item.available ? "history-good" : "history-bad"}>{item.available ? "Available" : "Unavailable"}</span>
+                  {item.statusCode ? ` · HTTP ${item.statusCode}` : ""}
+                  {item.responseTime !== null ? ` · ${item.responseTime} ms` : ""}
+                  {` · ${new Date(item.checkedAt).toLocaleString()}`}
+                  {item.error ? ` · ${item.error}` : ""}
+                </li>
+              ))}</ul>
+            )}
+          </div>
+        )}
+      </article>
+    );
+  }
+
+  /** Hosting connection and WordPress plugin pairing, shown in the website's Settings tab. */
+  function renderSiteConnection(site: Website) {
+    return <>
+                    <div className="wordpress-agent">
+                      <div className="wordpress-agent-heading">
+                        <strong>WordPress agent</strong>
+                        {site.wordpressAgent && !site.wordpressAgent.revokedAt
+                          ? <span className="agent-connected">Connected</span>
+                          : <span className="agent-disconnected">Not connected</span>}
+                      </div>
+                      {site.wordpressAgent && !site.wordpressAgent.revokedAt ? (
+                        <>
+                          <p>{site.wordpressAgent.siteName} · WordPress {site.wordpressAgent.wpVersion ?? "unknown"} · PHP {site.wordpressAgent.phpVersion ?? "unknown"}</p>
+                          <small>Last sync: {new Date(site.wordpressAgent.lastSeenAt).toLocaleString()}</small>
+                          {site.wordpressAgent.diagnostics && (
+                            <small>
+                              {site.wordpressAgent.diagnostics.plugins?.length ?? 0} plugins inspected ·
+                              {" "}{site.wordpressAgent.diagnostics.issues?.length ?? 0} detected issues ·
+                              {" "}{site.wordpressAgent.diagnostics.site?.overdueCronCount ?? 0} overdue cron events
+                            </small>
+                          )}
+                          {site.wordpressAgent.executions.map((execution) => (
+                            <small key={execution.id}>
+                              Recent repair: {execution.repair.issue?.title ?? "Approved repair"} · {execution.status} · {new Date(execution.createdAt).toLocaleString()}
+                            </small>
+                          ))}
+                          <button className="button ghost danger-text" onClick={() => disconnectAgent(site.wordpressAgent!.id)}>Revoke connection</button>
+                        </>
+                      ) : (
+                        <>
+                          <p>Pair a WordPress installation on this registered site.</p>
+                          <button className="button secondary" onClick={() => createPairing(site)} disabled={busy !== null}>
+                            {busy === `pair:${site.id}` ? "Creating…" : "Create one-time pairing code"}
+                          </button>
+                          {pairingCodes[site.id] && (
+                            <div className="pairing-code">
+                              <code>{pairingCodes[site.id].code}</code>
+                              <button className="button ghost" onClick={() => copyPairingCode(pairingCodes[site.id].code)}>Copy</button>
+                              <small>Expires {new Date(pairingCodes[site.id].expiresAt).toLocaleTimeString()}. Enter it in the WordPress plugin once.</small>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                    <details className="hosting-details">
+                      <summary>Hosting connection (optional, advanced)</summary>
+                    <div className="site-hosting-panel">
+                      <HostingManager
+                        websiteId={site.id}
+                        websiteName={site.name}
+                        issues={issues
+                          .filter((issue) => issue.website.id === site.id && issue.status !== "resolved")
+                          .map(({ id, title }) => ({ id, title }))}
+                        onNotice={setMessage}
+                        onProposalCreated={refresh}
+                      />
+                    </div>
+                    </details>
+    </>;
+  }
+
+  const visibleSites = sortSites(websites.filter((site) => {
+    const needle = siteQuery.trim().toLowerCase();
+    if (needle && !`${site.name} ${site.url}`.toLowerCase().includes(needle)) return false;
+    const health = siteHealth(site);
+    if (siteFilter === "attention") return health.rank >= 2;
+    if (siteFilter === "healthy") return health.key === "healthy";
+    if (siteFilter === "disconnected") return !site.wordpressAgent || Boolean(site.wordpressAgent.revokedAt);
+    return true;
+  }), siteSort);
+
 
   return (
     <main className="shell">
@@ -1077,13 +1356,13 @@ export default function Home() {
           <span className="summary-icon icon-amber">◷</span>
           <span className="summary-label">WARNINGS</span>
           <strong>{warningCount}</strong>
-          <span className="summary-foot">sites with low or medium issues</span>
+          <span className="summary-foot">online, only low or medium issues</span>
         </article>
         <article className="summary-card">
           <span className="summary-icon icon-red">!</span>
           <span className="summary-label">CRITICAL</span>
           <strong>{criticalCount}</strong>
-          <span className="summary-foot">sites down or high severity</span>
+          <span className="summary-foot">hacked, down or high severity</span>
         </article>
         <article className="summary-card">
           <span className="summary-icon icon-blue">↗</span>
@@ -1099,7 +1378,20 @@ export default function Home() {
         </article>
       </section>}
 
-      {(activeView === "dashboard" || activeView === "websites") && <div className="content-grid">
+      {activeView === "dashboard" && websites.length > 0 && (
+        <section className="panel sites-panel attention-panel">
+          <div className="panel-heading">
+            <div><p className="eyebrow">MONITORING</p><h2>Websites that need attention</h2></div>
+            <span className="count-pill">{websites.filter((site) => siteHealth(site).rank >= 2).length} OF {websites.length}</span>
+          </div>
+          {websites.filter((site) => siteHealth(site).rank >= 2).length === 0
+            ? <p className="activity-empty">All {websites.length} website(s) look healthy. Nothing needs your attention right now.</p>
+            : <div className="site-list">{sortSites(websites.filter((site) => siteHealth(site).rank >= 2), "worst").slice(0, 6).map((site) => renderSiteRow(site, true))}</div>}
+          <div className="board-footer"><button className="button secondary" onClick={() => setActiveView("websites")}>View all {websites.length} website(s)</button></div>
+        </section>
+      )}
+
+      {(activeView === "websites" || (activeView === "dashboard" && websites.length === 0)) && <div className="content-grid">
         <section className="panel sites-panel">
           <div className="panel-heading">
             <div>
@@ -1108,155 +1400,30 @@ export default function Home() {
             </div>
             <span className="count-pill">{websites.length} TOTAL</span>
           </div>
-
+          {websites.length > 0 && (
+            <div className="board-toolbar site-toolbar" role="search">
+              <input type="search" placeholder="Search websites" value={siteQuery} onChange={(event) => setSiteQuery(event.target.value)} aria-label="Search websites" />
+              <select value={siteFilter} onChange={(event) => setSiteFilter(event.target.value as typeof siteFilter)} aria-label="Filter websites">
+                <option value="all">All websites</option>
+                <option value="attention">Needs attention</option>
+                <option value="healthy">Healthy</option>
+                <option value="disconnected">Plugin not connected</option>
+              </select>
+              <select value={siteSort} onChange={(event) => setSiteSort(event.target.value as typeof siteSort)} aria-label="Sort websites">
+                <option value="worst">Needs attention first</option>
+                <option value="name">Name</option>
+                <option value="checked">Recently checked</option>
+              </select>
+            </div>
+          )}
           {websites.length === 0 ? (
             <div className="empty-state">
               <div className="empty-orbit">◎</div>
           <h3>Your watchlist is ready</h3>
           <p>Add a production site on its own, or optionally link it to staging. Checks run only when you request them.</p>
             </div>
-          ) : (
-            <div className="site-list">
-              {websites.map((site) => {
-                const check = site.checks[0];
-                const currentScan = scanProgress[site.id];
-                return (
-                  <article className="site-row" key={site.id}>
-                    <span className={`site-status ${check ? check.available ? "online" : "offline" : "unchecked"}`}>
-                      {check ? check.available ? "✓" : "!" : "·"}
-                    </span>
-                    <div className="site-info">
-                      <strong>{site.name}</strong>
-                      <small>{site.environmentType === "staging" ? "Staging" : "Production"}{site.relatedWebsite ? ` · linked to ${site.relatedWebsite.name}` : " · no paired environment"}</small>
-                      <span>{site.url}</span>
-                      {check && (
-                        <small>
-                          {check.available ? `HTTP ${check.statusCode}` : check.error}
-                          {check.responseTime !== null && ` · ${check.responseTime} ms`}
-                          {` · ${new Date(check.checkedAt).toLocaleString()}`}
-                        </small>
-                      )}
-                    </div>
-                    <div className="site-actions">
-                      <button className="button secondary" onClick={() => runScanWorkflow(site, false)} disabled={busy !== null}>
-                        {busy === `scan:${site.id}` ? "Queueing…" : "Scan only"}
-                      </button>
-                      <button className="button ghost" onClick={() => runScanWorkflow(site, true)} disabled={busy !== null} title="Collect automated evidence, then ask local AI to analyze findings from that scan.">
-                        {busy === `scan:${site.id}` ? "Queueing…" : "Scan + AI"}
-                      </button>
-                      <button className="button ghost" onClick={() => runSecurityCheck(site)} disabled={busy !== null} title="Compare what visitors, Googlebot and search visitors receive, and inspect robots.txt and the sitemap for injected spam.">
-                        {busy === `security:${site.id}` ? "Checking…" : "Security check"}
-                      </button>
-                      <button className="button ghost" onClick={() => toggleHistory(site)}>
-                        {history[site.id] ? "Hide history" : "History"}
-                      </button>
-                      <button className={compromiseFindings(site.id).length ? "button primary" : "button ghost"} onClick={() => openWebsiteDetail(site.id, "cleanup")}
-                        title="Review the cleanup plan and one-click fixes for this website.">
-                        {compromiseFindings(site.id).length ? `Clean up hacked site (${compromiseFindings(site.id).length})` : "Clean up & fixes"}
-                      </button>
-                      <button className="button ghost" onClick={() => openWebsiteDetail(site.id, "protection")} title="Protection measures, self-healing, automatic updates and alerts.">Protection</button>
-                      <button className="button ghost" onClick={() => openWebsiteDetail(site.id, "overview")}>Details</button>
-                      <button className="button ghost danger-text" onClick={() => deleteWebsite(site)} disabled={busy !== null}>Remove</button>
-                    </div>
-                    {currentScan && <small className="diagnostic-limit">Latest scan: {currentScan.status.replaceAll("_", " ")}{currentScan.withAi ? " · AI analysis selected" : " · automated evidence only"}</small>}
-                    <div className="site-settings">
-                      <label className="monitor-toggle">
-                        <input
-                          type="checkbox"
-                          checked={site.monitoringEnabled}
-                          onChange={(event) => updateWebsite(site, { monitoringEnabled: event.target.checked })}
-                          disabled={busy !== null}
-                        />
-                        Scheduled monitoring
-                      </label>
-                      <label className="interval-control">
-                        Every
-                        <select
-                          value={site.intervalMinutes}
-                          onChange={(event) => updateWebsite(site, { intervalMinutes: Number(event.target.value) })}
-                          disabled={busy !== null}
-                          aria-label={`Check frequency for ${site.name}`}
-                        >
-                          <option value={5}>5 min</option>
-                          <option value={15}>15 min</option>
-                          <option value={60}>1 hour</option>
-                          <option value={360}>6 hours</option>
-                          <option value={1440}>1 day</option>
-                        </select>
-                      </label>
-                    </div>
-                    {history[site.id] && (
-                      <div className="check-history">
-                        <strong>Recent checks (up to 100)</strong>
-                        {history[site.id].length === 0 ? <p>No checks have run yet.</p> : (
-                          <ul>{history[site.id].map((item) => (
-                            <li key={item.id}>
-                              <span className={item.available ? "history-good" : "history-bad"}>{item.available ? "Available" : "Unavailable"}</span>
-                              {item.statusCode ? ` · HTTP ${item.statusCode}` : ""}
-                              {item.responseTime !== null ? ` · ${item.responseTime} ms` : ""}
-                              {` · ${new Date(item.checkedAt).toLocaleString()}`}
-                              {item.error ? ` · ${item.error}` : ""}
-                            </li>
-                          ))}</ul>
-                        )}
-                      </div>
-                    )}
-                    <div className="site-hosting-panel">
-                      <HostingManager
-                        websiteId={site.id}
-                        websiteName={site.name}
-                        issues={issues
-                          .filter((issue) => issue.website.id === site.id && issue.status !== "resolved")
-                          .map(({ id, title }) => ({ id, title }))}
-                        onNotice={setMessage}
-                        onProposalCreated={refresh}
-                      />
-                    </div>
-                    <div className="wordpress-agent">
-                      <div className="wordpress-agent-heading">
-                        <strong>WordPress agent</strong>
-                        {site.wordpressAgent && !site.wordpressAgent.revokedAt
-                          ? <span className="agent-connected">Connected</span>
-                          : <span className="agent-disconnected">Not connected</span>}
-                      </div>
-                      {site.wordpressAgent && !site.wordpressAgent.revokedAt ? (
-                        <>
-                          <p>{site.wordpressAgent.siteName} · WordPress {site.wordpressAgent.wpVersion ?? "unknown"} · PHP {site.wordpressAgent.phpVersion ?? "unknown"}</p>
-                          <small>Last sync: {new Date(site.wordpressAgent.lastSeenAt).toLocaleString()}</small>
-                          {site.wordpressAgent.diagnostics && (
-                            <small>
-                              {site.wordpressAgent.diagnostics.plugins?.length ?? 0} plugins inspected ·
-                              {" "}{site.wordpressAgent.diagnostics.issues?.length ?? 0} detected issues ·
-                              {" "}{site.wordpressAgent.diagnostics.site?.overdueCronCount ?? 0} overdue cron events
-                            </small>
-                          )}
-                          {site.wordpressAgent.executions.map((execution) => (
-                            <small key={execution.id}>
-                              Recent repair: {execution.repair.issue?.title ?? "Approved repair"} · {execution.status} · {new Date(execution.createdAt).toLocaleString()}
-                            </small>
-                          ))}
-                          <button className="button ghost danger-text" onClick={() => disconnectAgent(site.wordpressAgent!.id)}>Revoke connection</button>
-                        </>
-                      ) : (
-                        <>
-                          <p>Pair a WordPress installation on this registered site.</p>
-                          <button className="button secondary" onClick={() => createPairing(site)} disabled={busy !== null}>
-                            {busy === `pair:${site.id}` ? "Creating…" : "Create one-time pairing code"}
-                          </button>
-                          {pairingCodes[site.id] && (
-                            <div className="pairing-code">
-                              <code>{pairingCodes[site.id].code}</code>
-                              <button className="button ghost" onClick={() => copyPairingCode(pairingCodes[site.id].code)}>Copy</button>
-                              <small>Expires {new Date(pairingCodes[site.id].expiresAt).toLocaleTimeString()}. Enter it in the WordPress plugin once.</small>
-                            </div>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
+          ) : visibleSites.length === 0 ? <p className="activity-empty">No websites match these filters.</p> : (
+            <div className="site-list">{visibleSites.map((site) => renderSiteRow(site, false))}</div>
           )}
         </section>
 
@@ -1328,6 +1495,7 @@ export default function Home() {
             onScan={(withAi) => runScanWorkflow(selectedWebsite, withAi)}
             onSecurityCheck={() => runSecurityCheck(selectedWebsite)}
             onNotice={setMessage}
+            connection={renderSiteConnection(selectedWebsite)}
             scanStatus={scanProgress[selectedWebsite.id] ?? null}
             websites={websites}
           />
@@ -1348,14 +1516,9 @@ export default function Home() {
             )}
           </article>
           <article className="panel">
-            <div className="panel-heading"><div><p className="eyebrow">INCIDENTS</p><h2>Recent issues</h2></div></div>
-            {recentIncidents.length === 0 ? <p className="activity-empty">No open incidents.</p> : (
-              <ul className="activity-list">{recentIncidents.map((issue) => (
-                <li key={issue.id}><span className={`severity severity-${issue.severity}`}>{issue.severity}</span>
-                  <div><strong>{issue.title}</strong><small>{issue.website.name} · {new Date(issue.lastSeenAt).toLocaleString()}</small></div>
-                </li>
-              ))}</ul>
-            )}
+            <div className="panel-heading"><div><p className="eyebrow">INCIDENTS</p><h2>Most important open issues</h2></div></div>
+            <IssueBoard issues={issues} mode="summary" renderDetails={renderIssueDetails} renderPrimary={renderIssuePrimary}
+              onOpenSite={(siteId) => openWebsiteDetail(siteId, "overview")} onViewAll={() => setActiveView("issues")} />
           </article>
           <article className="panel">
             <div className="panel-heading"><div><p className="eyebrow">REPAIR HISTORY</p><h2>Recent successful repairs</h2></div></div>
@@ -1370,121 +1533,15 @@ export default function Home() {
         </section>
       )}
 
-      {(activeView === "dashboard" || activeView === "issues") && <section className="panel issues-panel">
+      {activeView === "issues" && <section className="panel issues-panel">
         <div className="panel-heading">
-          <div><p className="eyebrow">ISSUE MANAGEMENT</p><h2>{activeView === "issues" ? "All issues" : "Recent issues"}</h2></div>
-          <span className="count-pill">{issues.filter((issue) => issue.status === "open").length} OPEN</span>
+          <div><p className="eyebrow">ISSUE MANAGEMENT</p><h2>Issues across your websites</h2></div>
+          <span className="count-pill">{issues.filter(isOpenIssue).length} OPEN</span>
         </div>
-        {issues.length === 0 ? (
-          <div className="issue-empty">No issues recorded yet. Failed availability checks and AI diagnoses will appear here.</div>
-        ) : (
-          <div className="issue-list">
-            {(activeView === "dashboard" ? issues.slice(0, 4) : issues).map((issue) => (
-              <article className="issue-card" key={issue.id}>
-                <div className="issue-heading">
-                  <span className={`severity severity-${issue.severity}`}>{issue.severity}</span>
-                  <div><strong>{issue.title}</strong><small>{issue.website.name} · {issue.diagnosis?.diagnosis?.category ?? issue.source} · {new Date(issue.lastSeenAt).toLocaleString()}</small></div>
-                  <span className={`issue-state state-${issue.status}`}>{issue.status.replace("_", " ")}</span>
-                </div>
-                <p className="issue-description">{issue.description}</p>
-                <small className="issue-page">Affected page: {issue.diagnosis?.diagnosis?.affectedPage ?? "Not identified from available evidence"}</small>
-                {issue.evidence !== null && issue.evidence !== undefined && (
-                  <details className="issue-evidence">
-                    <summary>Diagnostic evidence</summary>
-                    <pre>{JSON.stringify(issue.evidence, null, 2)}</pre>
-                  </details>
-                )}
-                {issue.diagnosis?.diagnosis && (
-                  <div className="issue-ai-diagnosis">
-                    <strong>Central diagnosis · {issue.diagnosis.diagnosis.severity} · {diagnosisConfidenceLabel(issue.diagnosis.diagnosis.confidence)}</strong>
-                    <DiagnosisDetails diagnosis={issue.diagnosis.diagnosis} />
-                  </div>
-                )}
-                {recommendations[issue.id] && <div className="issue-ai-diagnosis">
-                  <strong>Evidence-based recommendation · {recommendations[issue.id].kind === "supported_candidate" ? "supported change candidate" : "manual steps"} · {recommendations[issue.id].risk} risk</strong>
-                  <p>{recommendations[issue.id].summary}</p>
-                  <small>How this was generated: fixed rules matched this finding’s detector/fingerprint to the recorded browser or WordPress evidence. It is a bounded checklist, not an AI inference or a guaranteed root cause. If no exact safe rule matched, it returns general manual guidance.</small>
-                  <ul>{recommendations[issue.id].proposedChanges.map((change, index) => <li key={index}>{change}</li>)}</ul>
-                  {recommendations[issue.id].manualGuidance.length > 0 && <ol>{recommendations[issue.id].manualGuidance.map((step, index) => <li key={index}>{step}</li>)}</ol>}
-                  <p><strong>Verify:</strong> {recommendations[issue.id].verificationPlan.join(" ")}</p>
-                  <small>This recommendation is generated from stored evidence without AI. Any app-executed change still requires an eligible operation, recovery point, and your approval.</small>
-                </div>}
-                <small className="repair-availability">Repair availability: {issue.repairs.some((repair) => repair.operationIds.length > 0 && repair.proposal.executionAvailable)
-                  ? "A supported operation is available for review."
-                  : issue.repairs.length > 0
-                    ? "No automatic operation is supported for the current proposal; manual guidance is available below."
-                    : "Not assessed yet. Review a repair plan to check for a supported, evidence backed operation."}</small>
-                {issue.toolIds.length > 0 && <small className="tool-evidence">Relevant evidence: {issue.toolIds.join(", ")}</small>}
-                <div className="issue-actions">
-                  {oneClickFix(issue) && (
-                    <button className="button primary" onClick={() => fixIssue(issue)} disabled={busy !== null || Boolean(activeRunForSite(issue.website.id) && oneClickFix(issue)!.confirm)}
-                      title={activeRunForSite(issue.website.id) ? `The site is working on “${activeRunForSite(issue.website.id)!.proposal.issue}”; it handles one change at a time.` : undefined}>
-                      {busy === `fix:${issue.id}` ? "Approving…" : issue.repairs.some((repair) => (repair.proposal as { kind?: string }).kind === "compromise_cleanup" && ["approved", "executing"].includes(repair.status)) ? "Fix in progress…" : activeRunForSite(issue.website.id) && oneClickFix(issue)!.confirm ? "Site busy…" : oneClickFix(issue)!.label}
-                    </button>
-                  )}
-                  {(() => {
-                    const progress = fixProgress(issue);
-                    return progress ? <span className="fix-progress" role="status">{progress.active && <span className="spinner" aria-hidden="true" />}{progress.text}</span> : null;
-                  })()}
-                  <button className="button ghost" onClick={() => loadRecommendation(issue)} disabled={busy !== null}>
-                    {busy === `recommend:${issue.id}` ? "Preparing…" : recommendations[issue.id] ? "Refresh Recommendation" : "Get Recommendation (No AI)"}
-                  </button>
-                  <button className="button ghost" onClick={() => diagnoseIssue(issue, false)} disabled={busy !== null}>
-                    {busy === `issue-diagnose:${issue.id}` ? "Diagnosing…" : "Diagnose Without AI"}
-                  </button>
-                  <button className="button ghost" onClick={() => diagnoseIssue(issue, true)} disabled={busy !== null}>
-                    {busy === `issue-diagnose:${issue.id}` ? "Analyzing…" : "Analyze with AI (Optional)"}
-                  </button>
-                  {issue.status === "open" && <button className="button ghost" onClick={() => updateIssue(issue, "acknowledged")}>Acknowledge</button>}
-                  {issue.status !== "resolved" && <button className="button ghost" onClick={() => updateIssue(issue, "resolved")}>Resolve</button>}
-                  <button className="button secondary" onClick={() => proposeRepair(issue)} disabled={busy !== null || issue.repairs.some((repair) => ["pending_approval", "approved", "executing", "in_progress"].includes(repair.status))}>
-                    {busy === `repair:${issue.id}` ? "Preparing…" : "Review repair plan"}
-                  </button>
-                </div>
-                {issue.repairs.map((repair) => (
-                  <details className="repair-card issue-repair-details" key={repair.id}>
-                    <summary>View Repair Details · {repair.risk} risk · {repair.status.replaceAll("_", " ")}</summary>
-                    <p>{repair.proposal.rationale}</p>
-                    {repair.proposal.expectedImpact && <p><strong>Expected impact:</strong> {repair.proposal.expectedImpact}</p>}
-                    {repair.proposal.recoveryAvailability && <p><strong>Undo:</strong> {repair.proposal.recoveryAvailability}</p>}
-                    {repair.status === "rollback_required" && <p className="repair-limitation"><strong>Recovery needed:</strong> The plugin could not confirm its operation-specific undo. Review the execution and verification evidence below; use your existing site recovery process if manual recovery is needed.</p>}
-                    <ul>{repair.proposal.proposedChanges.map((change, index) => <li key={index}>{change}</li>)}</ul>
-                    {repair.proposal.manualGuidance && repair.proposal.manualGuidance.length > 0 && <div><strong>Manual remediation guidance · no changes will be executed</strong><ol>{repair.proposal.manualGuidance.map((step, index) => <li key={index}>{step}</li>)}</ol></div>}
-                    <RepairApprovalDetails repair={repair} />
-                    <small>Operations: {repair.operationIds.length > 0 ? repair.operationIds.join(", ") : "No executable allowlisted operation"}</small>
-                    <small>Permissions: {repair.requiredPermissions.join(", ")} · Initiated from {repair.initiatingInterface}</small>
-                    <small>Approval: {repair.approvalStatus} · Backup: {repair.backupStatus} · Execution: {repair.executionStatus} · Verification: {repair.verificationStatus} · Rollback: {repair.rollbackStatus}</small>
-                    {!repair.proposal.hostingRequest && <small>Queued repairs execute on the connected site’s next WordPress poll. WP-Cron polling is traffic-triggered, so low-traffic sites may take longer.</small>}
-                    {repair.events.length > 0 && (
-                      <details>
-                        <summary>Repair history ({repair.events.length} events)</summary>
-                        <ol>{repair.events.map((event) => (
-                          <li key={event.id}>{event.eventType.replaceAll("_", " ")} · {event.actor} · {new Date(event.createdAt).toLocaleString()}</li>
-                        ))}</ol>
-                      </details>
-                    )}
-                    {(repair.approvals?.length || repair.verificationResults?.length) ? <details><summary>Approvals and verification evidence</summary>
-                      {repair.approvals?.map((approval) => <p key={approval.id}>Approval: {approval.decision} · {new Date(approval.createdAt).toLocaleString()}{approval.comment ? ` · ${approval.comment}` : ""}</p>)}
-                      {repair.verificationResults?.map((verification) => <div key={verification.id}><p>Verification: {verification.status} via {verification.method} · {new Date(verification.createdAt).toLocaleString()}</p><pre>{JSON.stringify(verification.result, null, 2)}</pre></div>)}
-                    </details> : null}
-                    {repair.status === "pending_approval" && (
-                      <div className="issue-actions">
-                        {repair.operationIds.length > 0 && repair.proposal.executionAvailable
-                          ? <button className="button primary" onClick={() => decideRepair(repair.id, "approve_and_apply")} disabled={busy !== null}>Fix This Issue</button>
-                          : <button className="button secondary" onClick={() => decideRepair(repair.id, "approve")} disabled={busy !== null}>{repair.proposal.hostingRequest ? "Acknowledge review only" : "Acknowledge manual plan"}</button>}
-                        {repair.operationIds.length > 0 && repair.proposal.executionAvailable && <button className="button secondary" onClick={() => {
-                          setSelectedBatchRepairs((current) => current.includes(repair.id) ? current.filter((id) => id !== repair.id) : [...current, repair.id]);
-                          setMessage(selectedBatchRepairs.includes(repair.id) ? "Repair removed from the batch." : "Repair added to the batch. Open Repairs to review and authorize the selected batch.");
-                        }}>{selectedBatchRepairs.includes(repair.id) ? "Remove from Repair Batch" : "Add to Repair Batch"}</button>}
-                        <button className="button ghost" onClick={() => decideRepair(repair.id, "reject")} disabled={busy !== null}>Reject</button>
-                      </div>
-                    )}
-                  </details>
-                ))}
-              </article>
-            ))}
-          </div>
-        )}
+        {issues.length === 0
+          ? <div className="issue-empty">No issues recorded yet. Failed availability checks and AI diagnoses will appear here.</div>
+          : <IssueBoard issues={issues} mode="full" renderDetails={renderIssueDetails} renderPrimary={renderIssuePrimary}
+              onOpenSite={(siteId) => openWebsiteDetail(siteId, "overview")} onUpdateAll={updateAllPlugins} updateAllBusySiteId={busy?.startsWith("updates:") ? busy.slice(8) : null} />}
       </section>}
 
       {activeView === "repairs" && (
@@ -1736,6 +1793,7 @@ function WebsiteDetail({
   onScan,
   onSecurityCheck,
   onNotice,
+  connection,
   scanStatus,
 }: {
   site: Website;
@@ -1750,6 +1808,7 @@ function WebsiteDetail({
   onScan: (withAi: boolean) => void;
   onSecurityCheck: () => void;
   onNotice: (message: string) => void;
+  connection: ReactNode;
   scanStatus: { scanId: string; status: string; withAi: boolean } | null;
 }) {
   const check = site.checks[0] ?? null;
@@ -1872,6 +1931,8 @@ function WebsiteDetail({
     </div>;
   }
   return <div className="detail-content settings-detail">
+    <h3>Connection</h3>
+    <div className="settings-connection">{connection}</div>
     <h3>Monitoring settings</h3>
     <label className="monitor-toggle"><input type="checkbox" checked={site.monitoringEnabled} disabled={busy !== null}
       onChange={(event) => onUpdate({ monitoringEnabled: event.target.checked })} /> Scheduled monitoring</label>
