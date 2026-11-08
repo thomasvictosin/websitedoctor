@@ -147,11 +147,15 @@ function quarantinable(path: string, officialChecksums: Record<string, string> |
   return path.startsWith("wp-content/") && path.split("/").length === 2 && executable;
 }
 
+export const SALT_ROTATION_COOLDOWN_MS = 24 * 60 * 60_000;
+
 export function buildCleanupPlan(input: {
   diagnostics: unknown;
   openIssues: Array<{ fingerprint: string; severity: string; title: string }>;
   officialChecksums: Record<string, string> | null;
   now?: Date;
+  /** When a previous cleanup on this site last replaced the salts. */
+  saltsRotatedAt?: Date | null;
 }): CleanupPlan {
   const now = input.now ?? new Date();
   const diagnostics = record(input.diagnostics);
@@ -289,8 +293,11 @@ export function buildCleanupPlan(input: {
   }
 
   const compromised = steps.length > 0 || securityIssues.some((issue) => issue.severity === "critical" || issue.severity === "high");
+  // A follow-up cleanup within a day does not sign everyone out again: the earlier rotation already invalidated stolen cookies.
+  const recentRotation = input.saltsRotatedAt && now.getTime() - input.saltsRotatedAt.getTime() < SALT_ROTATION_COOLDOWN_MS ? input.saltsRotatedAt : null;
   if (compromised && steps.length + optional.length > 0) {
-    steps.push({ description: "Replace the eight WordPress secret keys and salts in wp-config.php, so stolen login cookies stop working. Everyone, including you, will need to sign in again.", operation: "rotate_salts", parameters: {} });
+    if (recentRotation) manual.push(`The secret keys and salts were already replaced at ${recentRotation.toISOString().slice(0, 16).replace("T", " ")} UTC, so this run does not sign everyone out again.`);
+    else steps.push({ description: "Replace the eight WordPress secret keys and salts in wp-config.php, so stolen login cookies stop working. Everyone, including you, will need to sign in again.", operation: "rotate_salts", parameters: {} });
   }
   if (steps.length) steps.push({ description: "Purge the page cache so visitors and search engines stop receiving cached spam pages.", operation: "purge_page_cache", parameters: {} });
   // Leave room for optional items; keep the closing salt rotation and cache purge.

@@ -46,9 +46,55 @@ function awd_integrity_relative(string $path, string $root): string
     return strpos($path, $root) === 0 ? substr($path, strlen($root)) : $path;
 }
 
+/** Bumped when the scanner's rules change, so cached plugin and theme results are re-checked. */
+if (!defined('AWD_INTEGRITY_SCANNER_REVISION')) define('AWD_INTEGRITY_SCANNER_REVISION', '2');
+
 function awd_integrity_is_executable_name(string $name): bool
 {
     return (bool) preg_match('/\.(?:php[0-9]?|phtml|pht|phar|phps|inc)$/i', $name);
+}
+
+/**
+ * True when a PHP file can do nothing when requested or included: only
+ * comments, an ABSPATH guard, `return <literal data>;` and at most a short
+ * line of plain text. That is the shape of "silence is golden" directory
+ * guards (All-in-One WP Migration writes "Kangaroos cannot jump here") and of
+ * data caches plugins generate (MetForm's icon cache is var_export output).
+ * Any variable, function call other than defined(), include, eval, backtick,
+ * heredoc, class or interpolated string is code, and the file stays flagged.
+ */
+function awd_integrity_is_inert_php(string $path): bool
+{
+    if (!function_exists('token_get_all') || is_link($path) || !is_file($path)) return false;
+    $size = @filesize($path);
+    if ($size === false || $size > 4 * 1024 * 1024) return false;
+    $source = @file_get_contents($path);
+    if (!is_string($source)) return false;
+    try {
+        $tokens = token_get_all($source);
+    } catch (Throwable $error) {
+        return false;
+    }
+    $ids = array(T_OPEN_TAG, T_CLOSE_TAG, T_WHITESPACE, T_COMMENT, T_DOC_COMMENT, T_RETURN, T_ARRAY, T_CONSTANT_ENCAPSED_STRING, T_LNUMBER, T_DNUMBER, T_DOUBLE_ARROW, T_BOOLEAN_OR, T_LOGICAL_OR, T_EXIT, T_IF);
+    $names = array('defined', 'abspath', 'wpinc', 'true', 'false', 'null');
+    $chars = array('(', ')', '[', ']', ',', ';', '!', '-', '{', '}');
+    $text = 0;
+    foreach ($tokens as $token) {
+        if (!is_array($token)) {
+            if (!in_array($token, $chars, true)) return false;
+            continue;
+        }
+        if ($token[0] === T_INLINE_HTML) {
+            // Plain text is printed, never run; markup could still serve a phishing page.
+            $text += strlen(trim($token[1]));
+            if (strpos($token[1], '<') !== false || $text > 512) return false;
+            continue;
+        }
+        if (in_array($token[0], $ids, true)) continue;
+        if ($token[0] === T_STRING && in_array(strtolower($token[1]), $names, true)) continue;
+        return false;
+    }
+    return true;
 }
 
 function awd_integrity_push(array &$list, $value, bool &$truncated): void
@@ -216,10 +262,12 @@ function awd_integrity_scan(string $root, ?array $checksums, array $context = ar
 
     $uploads_php = array();
     foreach (awd_integrity_find_executables($uploads_dir, $deadline, 100000, $partial) as $path) {
-        // An index.php containing only a "silence is golden" comment is a common, harmless directory guard.
-        if (basename($path) === 'index.php' && @filesize($path) !== false && @filesize($path) < 100) continue;
-        awd_integrity_push($uploads_php, awd_integrity_relative($path, $root), $truncated);
+        // Directory guards and plugin data caches (for example MetForm's icon cache)
+        // contain no code; plugins recreate them, so quarantining them never sticks.
+        // They are still scanned for encoded malware payloads.
         $to_scan[] = $path;
+        if (awd_integrity_is_inert_php($path)) continue;
+        awd_integrity_push($uploads_php, awd_integrity_relative($path, $root), $truncated);
     }
 
     $mu_plugins = array();

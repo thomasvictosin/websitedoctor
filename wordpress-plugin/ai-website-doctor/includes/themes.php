@@ -102,7 +102,7 @@ function awd_theme_compare(string $dir, array $official): array
     $added = array();
     foreach (awd_theme_php_files($dir, microtime(true) + 10, 5000) as $path) {
         $relative = ltrim(str_replace('\\', '/', substr($path, strlen($dir))), '/');
-        if (!isset($official[$relative])) $added[] = $relative;
+        if (!isset($official[$relative]) && !awd_integrity_is_inert_php($path)) $added[] = $relative;
         if (count($added) >= 50) break;
     }
     return array('modified' => $modified, 'missing' => $missing, 'addedPhp' => $added);
@@ -142,7 +142,8 @@ function awd_theme_integrity_report(array $themes, bool $force = false): array
         $slug = (string) $theme['stylesheet'];
         $version = (string) ($theme['version'] ?? '');
         $dir = awd_theme_dir($slug);
-        $key = $slug . '@' . $version;
+        // The scanner revision is part of the key, so a scanner change re-checks every package.
+        $key = $slug . '@' . $version . '#' . AWD_INTEGRITY_SCANNER_REVISION;
         if (isset($cache[$key]) && strtotime((string) ($cache[$key]['checkedAt'] ?? '')) > time() - AWD_THEME_INTEGRITY_MAX_AGE) {
             $results[] = $cache[$key];
             $fresh[$key] = $cache[$key];

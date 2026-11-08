@@ -65,7 +65,8 @@ function awd_plugin_compare_directory(string $dir, array $checksums): array
             foreach ($iterator as $file) {
                 if ($file->isLink() || !$file->isFile() || !awd_integrity_is_executable_name($file->getFilename())) continue;
                 $relative = ltrim(str_replace('\\', '/', substr($file->getPathname(), strlen($dir))), '/');
-                if (!isset($checksums[$relative])) $added[] = $relative;
+                // Files a plugin writes into its own folder at runtime (guards, caches) contain no code.
+                if (!isset($checksums[$relative]) && !awd_integrity_is_inert_php($file->getPathname())) $added[] = $relative;
                 if (count($added) >= 50) break;
             }
         } catch (Throwable $error) {
@@ -88,7 +89,8 @@ function awd_plugin_integrity_report(array $plugins, bool $force = false): array
         $slug = awd_plugin_slug($file);
         $version = (string) ($plugin['version'] ?? '');
         if ($slug === null || $slug === 'ai-website-doctor') continue;
-        $key = $slug . '@' . $version;
+        // The scanner revision is part of the key, so a scanner change re-checks every package.
+        $key = $slug . '@' . $version . '#' . AWD_INTEGRITY_SCANNER_REVISION;
         if (isset($cache[$key]) && is_array($cache[$key]) && strtotime((string) ($cache[$key]['checkedAt'] ?? '')) > time() - AWD_PLUGIN_INTEGRITY_MAX_AGE) {
             $results[] = $cache[$key];
             $fresh_cache[$key] = $cache[$key];

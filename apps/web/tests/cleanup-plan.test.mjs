@@ -66,6 +66,15 @@ test("builds the full playbook for a cloaked SEO-spam compromise", () => {
   assert.match(plan.planDigest, /^[a-f0-9]{64}$/);
 });
 
+test("a follow-up cleanup within a day does not replace the salts again", () => {
+  const recent = buildCleanupPlan({ diagnostics: diagnostics(), openIssues: issues, officialChecksums: official, now: NOW, saltsRotatedAt: new Date(NOW.getTime() - 3 * 60 * 60_000) });
+  assert.ok(!recent.steps.some((step) => step.operation === "rotate_salts"), "no second sign-out within 24 hours");
+  assert.ok(recent.manual.some((item) => /already replaced at 2026-11-07 14:00 UTC/.test(item)));
+  assert.equal(recent.steps.at(-1).operation, "purge_page_cache");
+  const later = buildCleanupPlan({ diagnostics: diagnostics(), openIssues: issues, officialChecksums: official, now: NOW, saltsRotatedAt: new Date(NOW.getTime() - 25 * 60 * 60_000) });
+  assert.equal(later.steps.at(-2).operation, "rotate_salts");
+});
+
 test("optional items run before salt rotation; unknown ids are rejected", () => {
   const plan = buildCleanupPlan({ diagnostics: diagnostics(), openIssues: issues, officialChecksums: official, now: NOW });
   const steps = selectCleanupSteps(plan, ["admin:wpsupport"]);

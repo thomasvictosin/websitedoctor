@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { db } from "./db.ts";
-import { allUpdateSteps, buildCleanupPlan, cleanupStepSchema, cleanupStepsDigest, compareVersions, fetchOfficialChecksums, fixPlanForIssue, pluginUpdateSteps, selectCleanupSteps, type CleanupPlan, type CleanupStep } from "./cleanup-plan.ts";
+import { SALT_ROTATION_COOLDOWN_MS, allUpdateSteps, buildCleanupPlan, cleanupStepSchema, cleanupStepsDigest, compareVersions, fetchOfficialChecksums, fixPlanForIssue, pluginUpdateSteps, selectCleanupSteps, type CleanupPlan, type CleanupStep } from "./cleanup-plan.ts";
 import { checkWebsite } from "./monitor.ts";
 import { runAndStoreSecurityCheck } from "./monitoring-service.ts";
 import { notifySite } from "./protection.ts";
@@ -37,16 +37,17 @@ export class CleanupError extends Error {
 }
 
 export async function loadCleanupPlan(websiteId: string, now = new Date()) {
-  const [agent, issues] = await Promise.all([
+  const [agent, issues, lastRotation] = await Promise.all([
     db.wordPressAgent.findFirst({ where: { websiteId, revokedAt: null }, select: { id: true, diagnostics: true, lastSeenAt: true } }),
     db.issue.findMany({ where: { websiteId, status: { in: ["open", "acknowledged"] } }, select: { id: true, fingerprint: true, severity: true, title: true } }),
+    db.repairProposal.findFirst({ where: { websiteId, operationIds: { has: "rotate_salts" }, executionStatus: "completed", createdAt: { gte: new Date(now.getTime() - SALT_ROTATION_COOLDOWN_MS) } }, orderBy: { createdAt: "desc" }, select: { createdAt: true } }),
   ]);
   const diagnostics = record(agent?.diagnostics);
   const core = record(record(diagnostics.integrity).core);
   const checksums = typeof core.version === "string" && core.version
     ? await fetchOfficialChecksums(core.version, typeof core.locale === "string" ? core.locale : "en_US")
     : null;
-  const plan = buildCleanupPlan({ diagnostics: agent?.diagnostics ?? null, openIssues: issues, officialChecksums: checksums, now });
+  const plan = buildCleanupPlan({ diagnostics: agent?.diagnostics ?? null, openIssues: issues, officialChecksums: checksums, now, saltsRotatedAt: lastRotation?.createdAt ?? null });
   if (!agent) plan.blockers.unshift("No WordPress plugin is connected to this website.");
   else if (agent.lastSeenAt.getTime() < now.getTime() - 15 * 60_000) plan.blockers.push("The WordPress plugin has not checked in for 15 minutes; it must be online to run the cleanup.");
   return { plan, agent, issues };
@@ -278,10 +279,24 @@ export async function recordCleanupReport(agent: { id: string; websiteId: string
   // Inside view: integrity findings after the plugin's post-cleanup sync.
   const remainingIntegrity = await db.issue.findMany({
     where: { websiteId: agent.websiteId, status: { in: ["open", "acknowledged"] }, fingerprint: { startsWith: "wp:integrity:" }, severity: { in: ["critical", "high"] } },
-    select: { title: true },
+    select: { title: true, fingerprint: true },
   });
   if (!report.diagnosticsSynced) reasons.push("The plugin could not sync a fresh integrity scan after the cleanup.");
-  for (const issue of remainingIntegrity) reasons.push(`Still detected inside the site: ${issue.title}`);
+  const ranSteps = Array.isArray(cleanup.steps) ? (cleanup.steps as unknown[]).map(record) : [];
+  const touched = (fingerprint: string) => applied.some((step) => {
+    const parameters = record(ranSteps[step.index]?.parameters);
+    if (fingerprint === "wp:integrity:uploads-php") return step.operation === "quarantine_file" && /(^|\/)uploads\//.test(String(parameters.path ?? ""));
+    const plugin = /^wp:integrity:plugin-modified:(.+)$/.exec(fingerprint);
+    if (plugin) return step.operation === "reinstall_plugin" && String(parameters.plugin ?? "").split("/")[0] === plugin[1];
+    const theme = /^wp:integrity:theme-modified:(.+)$/.exec(fingerprint);
+    if (theme) return step.operation === "reinstall_theme" && parameters.stylesheet === theme[1];
+    return false;
+  });
+  for (const issue of remainingIntegrity) {
+    reasons.push(touched(issue.fingerprint)
+      ? `Came back right after this cleanup removed it: ${issue.title}. Something on the site recreates it: usually a plugin rebuilding its own cache or guard file (harmless), sometimes a hidden backdoor. Check what the file contains before cleaning it again.`
+      : `Still detected inside the site: ${issue.title}`);
+  }
 
   // Outside view: what visitors and search engines receive now.
   let outside: { completed: string[]; findings: Array<{ fingerprint: string; severity: string; title: string }> } | null = null;
