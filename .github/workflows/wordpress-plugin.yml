@@ -18,11 +18,17 @@ permissions:
 jobs:
   plugin-checks:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Lowest supported (Requires PHP in the plugin header) through current releases.
+        php-version: ["7.2", "7.4", "8.0", "8.2", "8.4"]
+    name: plugin-checks (PHP ${{ matrix.php-version }})
     steps:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: "8.2"
+          php-version: ${{ matrix.php-version }}
           tools: composer:v2
       - name: Validate standalone plugin manifest
         working-directory: wordpress-plugin/ai-website-doctor

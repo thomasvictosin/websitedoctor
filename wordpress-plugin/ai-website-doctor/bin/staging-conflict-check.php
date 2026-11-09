@@ -98,6 +98,8 @@ function awd_staging_probe(): array
     }
     if (!function_exists('proc_open')) return array('status' => 'unavailable', 'error' => 'PHP proc_open is unavailable for the staging browser runner.');
     $command = array($node, '--experimental-strip-types', $real_script, home_url('/'));
+    // proc_open() accepts an argument list only from PHP 7.4; older versions need an escaped command line.
+    if (PHP_VERSION_ID < 70400) $command = implode(' ', array_map('escapeshellarg', $command));
     $stdout = tmpfile();
     $stderr = tmpfile();
     if ($stdout === false || $stderr === false) return array('status' => 'unavailable', 'error' => 'Could not allocate browser probe output.');
@@ -131,8 +133,8 @@ function awd_staging_interpret(array $baseline, array $probe): string
 {
     if (!in_array($baseline['status'] ?? '', array('passed', 'issues_found', 'partial'), true)
         || !in_array($probe['status'] ?? '', array('passed', 'issues_found', 'partial'), true)) return 'inconclusive';
-    $baseline_findings = array_fill_keys(array_map(static fn($finding) => (string) ($finding['fingerprint'] ?? ''), (array) ($baseline['findings'] ?? array())), true);
-    $probe_findings = array_fill_keys(array_map(static fn($finding) => (string) ($finding['fingerprint'] ?? ''), (array) ($probe['findings'] ?? array())), true);
+    $baseline_findings = array_fill_keys(array_map(static function ($finding) { return (string) ($finding['fingerprint'] ?? ''); }, (array) ($baseline['findings'] ?? array())), true);
+    $probe_findings = array_fill_keys(array_map(static function ($finding) { return (string) ($finding['fingerprint'] ?? ''); }, (array) ($probe['findings'] ?? array())), true);
     if (array_diff_key($baseline_findings, $probe_findings)) return 'conflict';
     if (($baseline['status'] ?? '') === 'partial' || ($probe['status'] ?? '') === 'partial'
         || !empty($baseline['crawlIncomplete']) || !empty($probe['crawlIncomplete'])) return 'inconclusive';
@@ -141,8 +143,8 @@ function awd_staging_interpret(array $baseline, array $probe): string
 
 function awd_staging_evidence(array $baseline, array $probe): string
 {
-    $baseline_ids = array_slice(array_map(static fn($finding) => (string) ($finding['fingerprint'] ?? ''), (array) ($baseline['findings'] ?? array())), 0, 30);
-    $probe_ids = array_slice(array_map(static fn($finding) => (string) ($finding['fingerprint'] ?? ''), (array) ($probe['findings'] ?? array())), 0, 30);
+    $baseline_ids = array_slice(array_map(static function ($finding) { return (string) ($finding['fingerprint'] ?? ''); }, (array) ($baseline['findings'] ?? array())), 0, 30);
+    $probe_ids = array_slice(array_map(static function ($finding) { return (string) ($finding['fingerprint'] ?? ''); }, (array) ($probe['findings'] ?? array())), 0, 30);
     return substr(sanitize_text_field(sprintf(
         'Disposable staging browser scan: baseline=%s (%d findings, %d pages); probe=%s (%d findings, %d pages); baseline findings=%s; probe findings=%s%s.',
         (string) ($baseline['status'] ?? 'unavailable'), count((array) ($baseline['findings'] ?? array())), count((array) ($baseline['pages'] ?? array())),

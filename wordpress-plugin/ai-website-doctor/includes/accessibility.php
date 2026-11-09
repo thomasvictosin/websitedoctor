@@ -93,7 +93,7 @@ function awd_a11y_name_for(string $tag, string $attributes, string $inner): stri
         $href = (string) awd_a11y_attr($attributes, 'href');
         $home = (array) wp_parse_url(home_url('/'));
         $target = (array) wp_parse_url($href);
-        $bare = static fn ($host) => (string) preg_replace('/^www\./', '', strtolower((string) $host));
+        $bare = static function ($host) { return (string) preg_replace('/^www\./', '', strtolower((string) $host)); };
         $same = $href !== '' && $href[0] !== '#' && (empty($target['host']) || $bare($target['host']) === $bare($home['host'] ?? ''));
         if ($same) {
             $path = trim((string) ($target['path'] ?? ''), '/');
@@ -185,32 +185,39 @@ function awd_a11y_label_fields(string $html): string
 {
     preg_match_all('/<label\b[^>]*\bfor\s*=\s*(?:"([^"]+)"|\'([^\']+)\'|([^\s>]+))/i', $html, $for);
     $labelled = array_flip(array_filter(array_merge($for[1], $for[2], $for[3])));
-    return (string) preg_replace_callback(
-        '/<(script|style|template)\b.*?<\/\1\s*>|<(input|select|textarea)\b([^>]*)>/is',
-        static function (array $match) use ($labelled, $html): string {
-            $m = array_map(static fn ($group) => $group[0], $match);
-            if (($m[1] ?? '') !== '') return $m[0];
-            // A field inside <label>…</label> is already named by that visible label.
-            $before = substr($html, max(0, $match[0][1] - 3000), min(3000, $match[0][1]));
-            $open = strripos($before, '<label');
-            if ($open !== false && $open > (int) strripos($before, '</label')) return $m[0];
-            $attributes = $m[3];
-            if (awd_a11y_has_name($attributes)) return $m[0];
-            $type = strtolower((string) awd_a11y_attr($attributes, 'type'));
-            if (strtolower($m[2]) === 'input' && in_array($type, array('hidden', 'submit', 'button', 'reset', 'image'), true)) return $m[0];
-            $id = awd_a11y_attr($attributes, 'id');
-            if ($id !== null && isset($labelled[$id])) return $m[0];
-            $label = trim((string) awd_a11y_attr($attributes, 'placeholder'));
-            if ($label === '') $label = awd_a11y_humanize((string) preg_replace('/^.*\[([^\]]+)\]$/', '$1', (string) awd_a11y_attr($attributes, 'name')));
-            if ($label === '' && $type === 'search') $label = 'Search';
-            if ($label === '') return $m[0];
-            return awd_a11y_add_attribute($m[2], $m[0], 'aria-label', substr($label, 0, 120));
-        },
-        $html,
-        -1,
-        $count,
-        PREG_OFFSET_CAPTURE
-    );
+    // Match offsets are needed to see whether a field sits inside <label>; preg_replace_callback()
+    // only reports them on PHP 7.4+, so the page is rebuilt from preg_match_all() instead.
+    if (!preg_match_all('/<(script|style|template)\b.*?<\/\1\s*>|<(input|select|textarea)\b([^>]*)>/is', $html, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
+        return $html;
+    }
+    $out = '';
+    $cursor = 0;
+    foreach ($matches as $match) {
+        $out .= substr($html, $cursor, $match[0][1] - $cursor) . awd_a11y_label_field($match, $html, $labelled);
+        $cursor = $match[0][1] + strlen($match[0][0]);
+    }
+    return $out . substr($html, $cursor);
+}
+
+function awd_a11y_label_field(array $match, string $html, array $labelled): string
+{
+    $m = array_map(static function ($group) { return $group[0]; }, $match);
+    if (($m[1] ?? '') !== '') return $m[0];
+    // A field inside <label>…</label> is already named by that visible label.
+    $before = substr($html, max(0, $match[0][1] - 3000), min(3000, $match[0][1]));
+    $open = strripos($before, '<label');
+    if ($open !== false && $open > (int) strripos($before, '</label')) return $m[0];
+    $attributes = $m[3];
+    if (awd_a11y_has_name($attributes)) return $m[0];
+    $type = strtolower((string) awd_a11y_attr($attributes, 'type'));
+    if (strtolower($m[2]) === 'input' && in_array($type, array('hidden', 'submit', 'button', 'reset', 'image'), true)) return $m[0];
+    $id = awd_a11y_attr($attributes, 'id');
+    if ($id !== null && isset($labelled[$id])) return $m[0];
+    $label = trim((string) awd_a11y_attr($attributes, 'placeholder'));
+    if ($label === '') $label = awd_a11y_humanize((string) preg_replace('/^.*\[([^\]]+)\]$/', '$1', (string) awd_a11y_attr($attributes, 'name')));
+    if ($label === '' && $type === 'search') $label = 'Search';
+    if ($label === '') return $m[0];
+    return awd_a11y_add_attribute($m[2], $m[0], 'aria-label', substr($label, 0, 120));
 }
 
 function awd_a11y_allow_zoom(string $html): string

@@ -60,7 +60,7 @@ From the repository root:
 - `npm run plugin:test` — plugin allowlist tests.
 - `npm run plugin:package` — build an installable ZIP under `wordpress-plugin/ai-website-doctor/dist/`.
 
-The plugin also has its own `composer.json` and scripts, so plugin-only development does not need the root Node workspace. Composer dependencies are currently empty; only PHP 8+ is required. Plugin checks run independently in CI, and tags named `wordpress-plugin-v<version>` create a plugin-only release ZIP.
+The plugin also has its own `composer.json` and scripts, so plugin-only development does not need the root Node workspace. Composer dependencies are currently empty; only PHP 7.2+ is required (CI tests 7.2 through 8.4). Plugin checks run independently in CI, and tags named `wordpress-plugin-v<version>` create a plugin-only release ZIP.
 
 ## Repository and security
 

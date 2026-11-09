@@ -14,7 +14,7 @@ function register_deactivation_hook(...$arguments): void {}
 function sanitize_text_field(string $value): string { return trim(strip_tags($value)); }
 function sanitize_textarea_field(string $value): string { return trim(strip_tags($value)); }
 function sanitize_key(string $value): string { return strtolower(preg_replace('/[^a-z0-9_-]/', '', $value)); }
-function wp_json_encode($value, int $flags = 0): string|false { return json_encode($value, $flags); }
+function wp_json_encode($value, int $flags = 0) { return json_encode($value, $flags); }
 function get_option(string $name, $default = false) { return $GLOBALS['awd_fixture_options'][$name] ?? $default; }
 function update_option(string $name, $value, $autoload = null): bool { $GLOBALS['awd_fixture_options'][$name] = $value; return true; }
 function wp_generate_uuid4(): string { static $counter = 0; return 'fixture-recovery-point-' . ++$counter; }
@@ -23,7 +23,14 @@ function wp_get_custom_css(string $stylesheet = ''): string { return $GLOBALS['a
 function wp_update_custom_css_post(string $css, array $args = array()): object { $GLOBALS['awd_fixture_custom_css'] = $css; return (object) array('post_name' => $args['stylesheet'] ?? 'fixture-theme'); }
 class WP_Error
 {
-    public function __construct(public string $code = '', public string $message = '') {}
+    public $code;
+    public $message;
+
+    public function __construct(string $code = '', string $message = '')
+    {
+        $this->code = $code;
+        $this->message = $message;
+    }
 }
 function is_wp_error($value): bool { return $value instanceof WP_Error; }
 function get_plugins(): array { return $GLOBALS['awd_fixture_plugins']; }
@@ -36,7 +43,7 @@ function wp_get_theme() { return new class {
 }; }
 function _get_cron_array(): array { return array($GLOBALS['awd_fixture_cron_time'] => array('fixture_failed_task' => array(array('schedule' => 'hourly', 'args' => array())))); }
 function esc_url_raw(string $url, array $protocols = array()): string { return $url; }
-function wp_parse_url(string $url): array|false { return parse_url($url); }
+function wp_parse_url(string $url) { return parse_url($url); }
 function untrailingslashit(string $url): string { return rtrim($url, '/'); }
 function wp_generate_password(int $length = 12, bool $special = true, bool $extra = false): string { return substr(bin2hex(random_bytes(32)), 0, $length); }
 function wp_upload_dir($time = null, bool $create = true): array { return $GLOBALS['awd_fixture_uploads'] ?? array(); }

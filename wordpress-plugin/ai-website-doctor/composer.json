@@ -2,12 +2,12 @@
   "name": "ai-website-doctor/wordpress-plugin",
   "description": "Standalone WordPress diagnostics and approved repair agent",
   "type": "wordpress-plugin",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "require": {
-    "php": ">=8.0"
+    "php": ">=7.2"
   },
   "scripts": {
-    "lint": "@php -l ai-website-doctor.php",
+    "lint": "for f in ai-website-doctor.php includes/*.php bin/*.php tests/allowlist.php; do php -l \"$f\" || exit 1; done",
     "test": "@php tests/allowlist.php",
     "package": "bash bin/package.sh"
   },
