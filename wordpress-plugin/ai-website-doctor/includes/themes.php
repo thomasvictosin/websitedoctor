@@ -55,6 +55,8 @@ function awd_theme_inventory(): array
             'source' => $known !== null && ($package === '' || str_starts_with($package, 'https://downloads.wordpress.org/theme/')) ? 'wordpress.org' : 'other',
         );
         if ($update !== null && preg_match('/^[0-9A-Za-z.+-]{1,40}$/', (string) ($update['new_version'] ?? ''))) $entry['newVersion'] = (string) $update['new_version'];
+        $requires_php = function_exists('awd_requires_php_header') ? awd_requires_php_header($theme->get('RequiresPHP')) : null;
+        if ($requires_php !== null) $entry['requiresPhp'] = $requires_php;
         $themes[] = $entry;
     }
     return array_slice($themes, 0, 50);

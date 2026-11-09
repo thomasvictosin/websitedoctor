@@ -550,4 +550,10 @@ foreach (array(
 if (awd_a11y_filter_html('{"json":true}', $all) !== '{"json":true}') throw new RuntimeException('Non-HTML responses must pass through unchanged.');
 if (awd_a11y_filter_html($page, array()) !== $page) throw new RuntimeException('With every fix off the page must be unchanged.');
 
+// "Requires PHP" headers are reported only when they are plain versions (0.9.2).
+awd_test_assert(awd_requires_php_header('7.4') === '7.4' && awd_requires_php_header(' 8.1.2 ') === '8.1.2', 'plain Requires PHP versions must be reported');
+awd_test_assert(awd_requires_php_header('') === null && awd_requires_php_header('7.4+') === null && awd_requires_php_header('>=8') === null && awd_requires_php_header(null) === null, 'odd Requires PHP headers must be dropped, not sent');
+$fixture_report = awd_collect_diagnostics(array());
+awd_test_assert(isset($fixture_report['plugins']) && is_array($fixture_report['plugins']), 'diagnostics must still list plugins');
+
 echo "WordPress plugin tests passed.\n";

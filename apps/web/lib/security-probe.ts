@@ -139,7 +139,7 @@ async function fetchText(rawUrl: string, headers: Record<string, string>, reques
       const next = new URL(location, target);
       if (next.origin !== origin) {
         // Never follow a redirect off the site: record where it pointed.
-        return { statusCode: response.statusCode, finalUrl: next.toString(), redirectedOffOrigin: true, text: "" };
+        return { statusCode: response.statusCode, finalUrl: next.toString(), redirectedOffOrigin: true, text: "", headers: response.headers };
       }
       target = next;
       continue;
@@ -150,9 +150,14 @@ async function fetchText(rawUrl: string, headers: Record<string, string>, reques
       || ((response.statusCode === 403 || response.statusCode === 503) && /<title>\s*(?:Just a moment|Attention Required!)/i.test(text))) {
       throw new Error(`blocked by an edge challenge (HTTP ${response.statusCode}); the outside check cannot see the real page`);
     }
-    return { statusCode: response.statusCode, finalUrl: target.toString(), redirectedOffOrigin: false, text };
+    return { statusCode: response.statusCode, finalUrl: target.toString(), redirectedOffOrigin: false, text, headers: response.headers };
   }
   throw new Error("Too many redirects.");
+}
+
+/** One same-origin GET as a browser, with public-address pinning (used by checks outside this probe). */
+export function fetchPageAsBrowser(rawUrl: string, request: ProbeRequester = defaultRequester) {
+  return fetchText(rawUrl, PROFILE_HEADERS.browser, request);
 }
 
 const CJK = /[぀-ヿ㐀-䶿一-鿿가-힯]/g;

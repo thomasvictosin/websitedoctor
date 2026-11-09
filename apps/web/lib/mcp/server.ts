@@ -26,6 +26,8 @@ const renewalsPutRoute = () => import("@/app/api/sites/[siteId]/renewals/route")
 const cloudflareGetRoute = () => import("@/app/api/sites/[siteId]/cloudflare/route").then((module) => module.GET);
 const cloudflarePostRoute = () => import("@/app/api/sites/[siteId]/cloudflare/route").then((module) => module.POST);
 const historyRoute = () => import("@/app/api/sites/[siteId]/history/route").then((module) => module.GET);
+const phpGetRoute = () => import("@/app/api/sites/[siteId]/hosting/php/route").then((module) => module.GET);
+const phpPostRoute = () => import("@/app/api/sites/[siteId]/hosting/php/route").then((module) => module.POST);
 const repairPolicyRoute = () => import("@/app/api/sites/[siteId]/repair-authorization/route").then((module) => module.GET);
 
 // The executor must have checked in within this window before the central app
@@ -46,6 +48,7 @@ How the system works:
 - One-click maintenance (plugin 0.4.0+): fix_issue applies a finding's single fix (update a plugin with an available update, or reinstall a WordPress.org plugin whose code differs from the official checksums); update_plugins updates all WordPress.org plugins with updates. Packages come only from WordPress.org, every file is checked against official checksums, and the previous version is put back automatically if the update fails or breaks the site. Premium plugins (not on WordPress.org) must be updated from their vendor. Themes are covered the same way (plugin 0.7.0+): theme updates, WordPress.org themes whose files differ from the official package (reinstall), malware patterns in any theme, unused themes and known theme vulnerabilities; update_plugins without a list updates WordPress.org plugins and themes.
 - Protection (plugin 0.5.0+): get_protection shows each hardening measure (block PHP in uploads, protect sensitive files, code editor off, XML-RPC off, hide usernames, security headers, fake-crawler/attack-tool filter) with whether it is verified effective on the server, the self-healing and automatic-update settings, and recent alerts. apply_protection turns measures on/off through the plugin; set_protection switches self-healing (automatic safe cleanup of new malware files, max 3/day) and daily verified plugin updates. No setting makes a site unhackable; say so if asked.
 - Cloudflare edge protection: get_cloudflare_status shows whether the site's Cloudflare zone is connected and traffic is proxied; apply_cloudflare_protection adds the app's rules (PHP in uploads, sensitive files, fake crawlers on login/admin, attack tools, login challenge and rate limit) and keeps the owner's own rules. The owner connects a Cloudflare API token in the dashboard's Protection tab; tokens are never accepted through MCP.
+- PHP version (cPanel hosting connection): get_php_version shows the PHP version cPanel serves the site with, the version WordPress reports, the installed versions, and for each one what blocks it (WordPress core too old, an active plugin/theme that requires a newer PHP, below the plugin's 7.2 minimum) and what to check first. switch_php_version switches, checks the home page, login page, REST API and admin-ajax from outside, and switches back automatically if a page that worked before fails; the plugin's next sync confirms the version WordPress runs. The owner adds the cPanel API token in the dashboard (Settings → Hosting connection); tokens are never accepted through MCP. Hosts without cPanel must change PHP in their own control panel.
 - Known vulnerabilities: findings with source vulnerability_feed come from the Wordfence Intelligence database (needs a free key in Settings → Integrations) and from WordPress.org's list of closed plugins (no key). fix_issue installs the fixed WordPress.org version; fix_issue with mode "remove" deactivates a vulnerable plugin into the quarantine until fixed. Premium plugins are fixed by uploading the vendor's zip in the app (website → Plugins & themes); the app scans it first. You cannot upload files.
 - Performance: get_performance returns the latest PageSpeed Insights results (mobile and desktop score, LCP, TBT, CLS, FCP, TTFB, real-visitor INP/LCP/CLS when Google has data), each failing audit explained with the plugin/theme that causes it, and the speed measures on the site. run_performance_test starts a new test (about a minute; needs a PageSpeed key in Settings). apply_speed_fixes turns measures on/off through the plugin (0.8.0+): page_cache, compression, browser_caching, defer_scripts, font_display_swap, trim_extras, lazy_load, webp_uploads.
 - Renewals: get_renewals returns SSL certificate, domain and hosting expiry dates (SSL and domain detected daily; hosting entered by the owner) with days left; set_renewal_date records a hosting (or unpublished domain) date. Reminders are emailed 30 days before, 10 days before and on expiry.
@@ -482,6 +485,33 @@ export function createWebsiteDoctorMcpServer(principal: RequestPrincipal, origin
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
   }, async ({ siteId, remove, botFightMode, confirm }) => {
     const result = await callRoute(cloudflarePostRoute, `/api/sites/${encodeURIComponent(siteId)}/cloudflare`, { method: "POST", body: remove ? { action: "remove", confirm } : { action: "apply", botFightMode, confirm }, params: { siteId } });
+    return result.ok ? text(result.data) : failure(result);
+  });
+
+  tool("get_php_version", {
+    title: "Get the site's PHP version and switch options",
+    description: "Return the PHP version cPanel serves the site with, the version WordPress reports, the server's installed versions, and for each version the blockers and warnings of the compatibility check, plus the last switch and whether the plugin confirmed it. Needs a cPanel hosting connection.",
+    inputSchema: { siteId: z.string().min(1).max(64) },
+    annotations: { readOnlyHint: true, openWorldHint: true },
+  }, async ({ siteId }) => {
+    const result = await callRoute(phpGetRoute, `/api/sites/${encodeURIComponent(siteId)}/hosting/php`, { params: { siteId } });
+    return result.ok ? text(result.data) : failure(result);
+  });
+
+  tool("switch_php_version", {
+    title: "Switch the site's PHP version",
+    description: "Switch the site to another installed PHP version through its cPanel connection (for example version \"8.2\"). Refused when the compatibility check finds a blocker. The site is checked from outside after switching and switched back automatically if it breaks; takes up to two minutes. Pass expectedCurrent (the version you showed the user) so nothing happens if it changed meanwhile. Ask the user first.",
+    inputSchema: {
+      siteId: z.string().min(1).max(64),
+      version: z.string().regex(/^(\d\.\d{1,2}|ea-php\d{2,3})$/),
+      expectedCurrent: z.string().regex(/^(\d\.\d{1,2}|ea-php\d{2,3})$/).optional(),
+      connectionId: z.string().min(1).max(128).optional(),
+      confirm: z.literal(true),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async ({ siteId, version, expectedCurrent, connectionId, confirm }) => {
+    const body = { version, confirm, ...(expectedCurrent ? { expectedCurrent } : {}), ...(connectionId ? { connectionId } : {}) };
+    const result = await callRoute(phpPostRoute, `/api/sites/${encodeURIComponent(siteId)}/hosting/php`, { method: "POST", body, params: { siteId }, headers: { "x-awd-interface": "mcp" } });
     return result.ok ? text(result.data) : failure(result);
   });
 

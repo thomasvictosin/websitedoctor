@@ -263,9 +263,9 @@ function manualRemediationGuidance(issueFingerprint: string, description: string
     "Run the affected scheduled task safely on staging, then verify its next execution and sync fresh task history.",
   ];
   if (/php-version-low/.test(fingerprint)) return [
-    "Check the host's supported PHP versions and the compatibility of WordPress core, the active theme, and all required plugins.",
-    "Upgrade PHP on a backed-up staging site first and exercise critical site workflows; coordinate the production version switch with the host.",
-    "Rerun WordPress diagnostics and browser checks after the host applies the change.",
+    "On cPanel hosting, add the account under Settings → Hosting connection (cPanel API token) and switch PHP there: the app blocks versions that WordPress core or an active plugin/theme cannot run on, checks the site from outside after switching, and switches back automatically if it breaks.",
+    "Update WordPress, the theme and plugins first; outdated plugin versions are the most common cause of errors after a PHP upgrade. For shops and membership sites, try the new version on a staging copy first.",
+    "Without cPanel, change the version in the host's control panel (or ask the host), then confirm it in the next plugin sync and rerun the browser and security checks.",
   ];
   if (/availability/.test(fingerprint)) return [
     "Check the hosting/provider status, DNS, TLS certificate, origin health, and recent deployment or traffic changes.",

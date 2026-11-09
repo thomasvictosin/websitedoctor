@@ -46,6 +46,13 @@ export const hostingConnectionInputSchema = z.object({
   secret: z.string().trim().max(8192).optional().or(z.literal("")),
   testConnection: z.boolean().optional().default(false),
 }).superRefine((value, context) => {
+  if (value.method === "cpanel_uapi") {
+    if (!value.username) context.addIssue({ code: "custom", path: ["username"], message: "Enter the cPanel account username." });
+    if (!value.secret) context.addIssue({ code: "custom", path: ["secret"], message: "Paste a cPanel API token (cPanel → Security → Manage API Tokens)." });
+    if (value.authMethod !== "token") context.addIssue({ code: "custom", path: ["authMethod"], message: "cPanel connections use an API token." });
+    if (value.port !== undefined && value.port !== 2083 && value.port !== 443) context.addIssue({ code: "custom", path: ["port"], message: "cPanel connections use port 2083, or 443 for a cpanel.<domain> proxy." });
+    return;
+  }
   if (value.method !== "sftp") return;
   if (!value.username) context.addIssue({ code: "custom", path: ["username"], message: "An SFTP username is required." });
   if (!value.documentRoot) context.addIssue({ code: "custom", path: ["documentRoot"], message: "An SFTP document root is required." });

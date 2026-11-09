@@ -17,7 +17,7 @@ This roadmap records the product decisions and current implementation boundary d
 
 - WordPress change execution exists for a small allowlist through the paired plugin, with exact-target recovery and verification.
 - Google Drive can hold encrypted operation-specific WordPress recovery snapshots. It is not a complete file/database backup.
-- Hosting inspection currently supports pinned SFTP reads. cPanel, Plesk, and provider adapters have registry/UI placeholders, not operational adapters. Hosting proposals do not execute.
+- Hosting inspection currently supports pinned SFTP reads. A cPanel UAPI adapter (API token) can read and switch the site's PHP version, with a compatibility check, outside verification and automatic switch-back (see the hosting write-safety contract). Plesk and provider adapters have registry/UI placeholders, not operational adapters. Hosting proposals do not execute.
 - Deterministic browser/HTTP/accessibility diagnostics already run without AI. Deterministic rule-based diagnosis and remediation guidance are available as explicit no-AI issue actions; these label observed facts and leave root cause unconfirmed. This is a bounded rule checklist, not an inferred root cause.
 - Ollama is the only model provider. It defaults to `qwen2.5:3b`; no OpenRouter/Grok providers, credit-aware fallback, or provider health policy are implemented.
 - Docker Compose supplies local PostgreSQL and optional Ollama only. Prisma uses the PostgreSQL `DATABASE_URL` environment variable.
@@ -31,7 +31,8 @@ This roadmap records the product decisions and current implementation boundary d
 - [x] Remove copy that says SFTP is read-only by design. Current SFTP features inspect only; future write capability depends on a safe adapter and the selected operation.
 - [ ] Add a write-intent confirmation screen/modal that names the host, exact path, intended operation, backup scope, overwrite risk, and rollback limits.
 - [ ] Keep SFTP writes disabled until the adapter can guarantee safe path confinement, conditional commit or writer fencing, pre-change snapshots, and conflict-safe rollback. A confirmation warning is necessary for consent, but cannot repair the technical race where another process changes a remote file between inspection and write.
-- [ ] Implement and validate adapters by actual host capability, not brand. First investigate a minimal per-site Linux agent or documented conditional provider API. Treat cPanel UAPI and branded control panels as different APIs unless the hosting account proves compatibility.
+- [ ] Implement and validate adapters by actual host capability, not brand. First investigate a minimal per-site Linux agent or documented conditional provider API. Treat cPanel UAPI and branded control panels as different APIs unless the hosting account proves compatibility. (Done for one capability: cPanel UAPI `LangPHP` PHP version switching, verified per account by its connection test.)
+- [ ] Plesk PHP version switching through the Plesk REST/CLI API, using the same compatibility check and verify-then-switch-back sequence as cPanel.
 - [ ] Keep unsupported write attempts explicit and non-mutating; never imply that an acknowledged proposal performed a change.
 
 ### 2. Deterministic recommendations and optional AI

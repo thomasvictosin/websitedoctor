@@ -58,6 +58,9 @@ export const integrityReportSchema = z.object({
 
 export type IntegrityReport = z.infer<typeof integrityReportSchema>;
 
+// Plugin 0.9.2+: a plugin/theme "Requires PHP" header. An unexpected value is dropped, never a reason to reject the sync.
+const requiresPhpSchema = z.string().regex(/^\d{1,2}(\.\d{1,2}){0,2}$/).optional().catch(undefined);
+
 export const agentDiagnosticSchema = z.object({
   collectedAt: z.string().datetime({ offset: true }),
   site: z.object({
@@ -81,6 +84,7 @@ export const agentDiagnosticSchema = z.object({
     updateAvailable: z.boolean(),
     source: z.enum(["wordpress.org", "other"]).optional(),
     newVersion: z.string().regex(/^[0-9A-Za-z.+-]{1,40}$/).optional(),
+    requiresPhp: requiresPhpSchema,
   })).max(500),
   themes: z.array(z.object({
     stylesheet: z.string().max(100),
@@ -92,6 +96,7 @@ export const agentDiagnosticSchema = z.object({
     updateAvailable: z.boolean(),
     source: z.enum(["wordpress.org", "other"]),
     newVersion: z.string().regex(/^[0-9A-Za-z.+-]{1,40}$/).optional(),
+    requiresPhp: requiresPhpSchema,
   })).max(50).optional(),
   editablePages: z.array(z.object({
     id: z.number().int().positive(),

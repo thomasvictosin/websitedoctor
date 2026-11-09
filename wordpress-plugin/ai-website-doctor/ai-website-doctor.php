@@ -1032,6 +1032,13 @@ function awd_poll_central(): void
     }
 }
 
+/** A plugin/theme "Requires PHP" header, only when it is a plain version such as 7.4 (so odd headers never break a sync). */
+function awd_requires_php_header($value): ?string
+{
+    $value = trim((string) $value);
+    return preg_match('/^\d{1,2}(\.\d{1,2}){0,2}$/', $value) ? $value : null;
+}
+
 function awd_collect_diagnostics(array $settings): array
 {
     require_once ABSPATH . 'wp-admin/includes/plugin.php';
@@ -1059,6 +1066,8 @@ function awd_collect_diagnostics(array $settings): array
         if (is_object($update) && isset($update->new_version) && preg_match('/^[0-9A-Za-z.+-]{1,40}$/', (string) $update->new_version)) {
             $entry['newVersion'] = (string) $update->new_version;
         }
+        $requires_php = awd_requires_php_header($plugin['RequiresPHP'] ?? '');
+        if ($requires_php !== null) $entry['requiresPhp'] = $requires_php;
         $plugins[] = $entry;
     }
 
