@@ -556,4 +556,41 @@ awd_test_assert(awd_requires_php_header('') === null && awd_requires_php_header(
 $fixture_report = awd_collect_diagnostics(array());
 awd_test_assert(isset($fixture_report['plugins']) && is_array($fixture_report['plugins']), 'diagnostics must still list plugins');
 
+// Moving code into place clears PHP's opcode cache for it (0.9.3). Without that, the request right after
+// a plugin upgrade ran cached old files next to new ones ("Class ... not found") and the health check
+// rolled back a good package. Run in a child PHP with the cache on and a long recheck interval, like a host.
+$opcache_dir = sys_get_temp_dir() . '/awd-opcache-' . bin2hex(random_bytes(4));
+mkdir($opcache_dir, 0700, true);
+$opcache_probe = $opcache_dir . '/probe.php';
+file_put_contents($opcache_probe, '<?php
+define("ABSPATH", __DIR__ . "/");
+function add_action() {}
+require ' . var_export(dirname(__DIR__) . '/includes/cleanup.php', true) . ';
+if (!function_exists("opcache_get_status") || !is_array(@opcache_get_status(false))) { echo "skip"; exit; }
+$root = __DIR__;
+$plugin = function ($dir, $version) { @mkdir($dir); file_put_contents($dir . "/main.php", "<?php return " . var_export($version, true) . ";"); touch($dir . "/main.php", time() - 3600 * ($version === "old" ? 2 : 1)); };
+$swap = function ($use_helper) use ($root, $plugin) {
+    $live = $root . "/live-" . ($use_helper ? "helper" : "rename");
+    $plugin($live, "old");
+    $before = include $live . "/main.php";
+    $plugin($root . "/new", "new");
+    if ($use_helper) { awd_cleanup_move($live, $live . ".previous"); awd_cleanup_move($root . "/new", $live); }
+    else { rename($live, $live . ".previous"); rename($root . "/new", $live); }
+    clearstatcache();
+    return $before . ">" . (include $live . "/main.php");
+};
+echo $swap(false), " ", $swap(true);
+');
+$opcache_output = trim((string) shell_exec(escapeshellarg(PHP_BINARY) . ' -d opcache.enable=1 -d opcache.enable_cli=1 -d opcache.validate_timestamps=1 -d opcache.revalidate_freq=600 ' . escapeshellarg($opcache_probe) . ' 2>&1'));
+if ($opcache_output === 'skip') {
+    echo "Opcode cache unavailable in this PHP; skipped the opcache move test.\n";
+} else {
+    // The plain rename must show the stale result, or this test proves nothing about the helper.
+    awd_test_assert($opcache_output === 'old>old old>new', 'moving code into place must clear the opcode cache (got "' . $opcache_output . '")');
+}
+foreach (array('live-rename.previous', 'live-rename', 'live-helper.previous', 'live-helper') as $opcache_sub) {
+    @unlink($opcache_dir . '/' . $opcache_sub . '/main.php'); @rmdir($opcache_dir . '/' . $opcache_sub);
+}
+@unlink($opcache_probe); @rmdir($opcache_dir);
+
 echo "WordPress plugin tests passed.\n";
