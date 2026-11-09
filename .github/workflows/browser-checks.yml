@@ -6,30 +6,68 @@ name: Browser checks (layout, mobile menu, accessibility)
 # failed requests, accessibility problems and layout shift. Results are posted
 # to the app with the same MONITOR_URL and CRON_SECRET secrets as the
 # scheduled monitoring workflow.
+#
+# Every site is scanned twice a day (two times, so one skipped GitHub schedule
+# does not cost a day). Every 30 minutes the runner also wakes up and rescans
+# only the sites waiting for a re-check after a fix (accessibility names and
+# labels); when there are none it stops after one request, before installing
+# anything.
 on:
   schedule:
     - cron: "15 6 * * *"
+    - cron: "15 18 * * *"
+    - cron: "*/30 * * * *"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "all = every monitored site; pending = only sites waiting for a re-check"
+        type: choice
+        options: [all, pending]
+        default: all
 
 permissions:
   contents: read
+
+concurrency:
+  group: browser-checks
+  cancel-in-progress: false
 
 jobs:
   browser-checks:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      MONITOR_URL: ${{ secrets.MONITOR_URL }}
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
+      BROWSER_CHECK_MODE: ${{ (github.event_name == 'schedule' && github.event.schedule == '*/30 * * * *') && 'pending' || inputs.mode || 'all' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Anything to check?
+        id: work
+        run: |
+          if [ "$BROWSER_CHECK_MODE" != "pending" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ -z "$MONITOR_URL" ] || [ -z "$CRON_SECRET" ]; then echo "MONITOR_URL and CRON_SECRET are not configured."; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0; fi
+          # An unreachable app is not a failure here; the next wake-up or the daily scan tries again.
+          if ! body=$(curl -fsS --max-time 30 -H "Authorization: Bearer $CRON_SECRET" "${MONITOR_URL%/}/api/cron/browser-checks?pending=1"); then
+            echo "::warning::Could not list the sites waiting for a re-check."
+            body='{"sites":[]}'
+          fi
+          count=$(printf '%s' "$body" | jq '.sites | length' 2>/dev/null || echo 0)
+          case "$count" in ''|*[!0-9]*) count=0 ;; esac
+          echo "$count site(s) waiting for a re-check."
+          if [ "${count:-0}" -gt 0 ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; fi
+      - if: steps.work.outputs.run == 'true'
+        uses: actions/checkout@v4
+      - if: steps.work.outputs.run == 'true'
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - if: steps.work.outputs.run == 'true'
+        run: npm ci
       - name: Install Playwright Chromium
+        if: steps.work.outputs.run == 'true'
         run: npx playwright install --with-deps chromium
-      - name: Check every monitored site in a real browser
+      - name: Check the sites in a real browser
+        if: steps.work.outputs.run == 'true'
         working-directory: apps/web
-        env:
-          MONITOR_URL: ${{ secrets.MONITOR_URL }}
-          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: node --experimental-strip-types scripts/browser-checks.mjs

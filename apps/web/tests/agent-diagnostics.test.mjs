@@ -55,3 +55,21 @@ test("rejects malformed dates, unsafe fingerprints, unsupported severities, and 
   assert.equal(agentDiagnosticSchema.safeParse({ ...sample, authorizedLogExcerpt: "x".repeat(16_385) }).success, false);
   assert.equal(agentDiagnosticSchema.safeParse({ ...sample, plugins: Array.from({ length: 501 }, () => sample.plugins[0]) }).success, false);
 });
+
+test("keeps the plugin's speed and accessibility measure states", () => {
+  const performance = {
+    measures: [{ id: "a11y_names", enabled: true, verified: null, detail: "" }, { id: "compression", enabled: false, verified: false, detail: "Off." }],
+    server: "LiteSpeed",
+    cachePlugins: ["LiteSpeed Cache"],
+  };
+  const parsed = agentDiagnosticSchema.safeParse({ ...sample, performance });
+  assert.equal(parsed.success, true);
+  assert.deepEqual(parsed.data.performance, performance);
+});
+
+test("drops a malformed measure report instead of rejecting the whole sync", () => {
+  const parsed = agentDiagnosticSchema.safeParse({ ...sample, performance: { measures: "nope" } });
+  assert.equal(parsed.success, true);
+  assert.equal(parsed.data.performance, undefined);
+  assert.equal(parsed.data.site.wpVersion, "6.8");
+});

@@ -3,6 +3,7 @@
 // and posts each result to the app, which stores it like any other scan.
 // Vercel functions have no browser, so this runs on a GitHub Actions runner:
 //   MONITOR_URL=https://… CRON_SECRET=… node --experimental-strip-types scripts/browser-checks.mjs
+// BROWSER_CHECK_MODE=pending scans only the sites waiting for a re-check after a fix.
 import { scanBrowserSite } from "../lib/browser-monitor.ts";
 
 const base = (process.env.MONITOR_URL ?? "").replace(/\/$/, "");
@@ -13,10 +14,11 @@ if (!base || !secret) {
 }
 const headers = { authorization: `Bearer ${secret}` };
 
-const listing = await fetch(`${base}/api/cron/browser-checks`, { headers, signal: AbortSignal.timeout(30_000) });
+const pendingOnly = process.env.BROWSER_CHECK_MODE === "pending";
+const listing = await fetch(`${base}/api/cron/browser-checks${pendingOnly ? "?pending=1" : ""}`, { headers, signal: AbortSignal.timeout(30_000) });
 if (!listing.ok) throw new Error(`Listing monitored sites failed: HTTP ${listing.status} ${await listing.text()}`);
 const { sites } = await listing.json();
-console.log(`${sites.length} monitored site(s).`);
+console.log(pendingOnly ? `${sites.length} site(s) waiting for a re-check.` : `${sites.length} monitored site(s).`);
 
 let failures = 0;
 for (const site of sites) {

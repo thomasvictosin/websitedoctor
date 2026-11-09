@@ -35,6 +35,8 @@ type Website = {
   intervalMinutes: number;
   checks: Check[];
   _count: { issues: number };
+  /** Latest browser re-check request (after an accessibility fix); answeredAt is set once the runner rescanned. */
+  browserRecheck?: { requestedAt: string; reason: string; answeredAt: string | null } | null;
   wordpressAgent: null | {
     id: string;
     siteName: string;
@@ -49,6 +51,7 @@ type Website = {
       phpErrorLog?: { collectionEnabled: boolean; status: string; observedCount: number; limit: number };
       issues?: Array<{ title: string; severity: string }>;
       settings?: { blogname?: string; blogdescription?: string };
+      performance?: { measures?: Array<{ id: string; enabled: boolean }> };
     } | null;
     lastSeenAt: string;
     revokedAt: string | null;
@@ -724,7 +727,7 @@ export default function Home() {
   function renderIssuePrimary(issue: Issue) {
     return <>
                   {oneClickFix(issue) && (
-                    <button className="button primary" onClick={() => fixIssue(issue)} disabled={busy !== null || Boolean(activeRunForSite(issue.website.id) && oneClickFix(issue)!.confirm)}
+                    <button className="button primary" onClick={() => fixIssue(issue)} disabled={busy !== null || ("action" in oneClickFix(issue)! && oneClickFix(issue)!.action === "a11y-waiting") || Boolean(activeRunForSite(issue.website.id) && oneClickFix(issue)!.confirm)}
                       title={activeRunForSite(issue.website.id) ? `The site is working on “${activeRunForSite(issue.website.id)!.proposal.issue}”; it handles one change at a time.` : undefined}>
                       {busy === `fix:${issue.id}` ? "Approving…" : issue.repairs.some((repair) => (repair.proposal as { kind?: string }).kind === "compromise_cleanup" && ["approved", "executing"].includes(repair.status)) ? "Fix in progress…" : activeRunForSite(issue.website.id) && oneClickFix(issue)!.confirm ? "Site busy…" : oneClickFix(issue)!.label}
                     </button>
@@ -733,6 +736,10 @@ export default function Home() {
                     <button className="button ghost issue-secondary" disabled={busy !== null || Boolean(activeRunForSite(issue.website.id))} onClick={() => removeUntilFixed(issue)}>Remove until fixed</button>
                   )}
                   {(() => {
+                    const a11y = a11yFixState(issue);
+                    if (a11y?.phase === "waiting") return <span className="fix-progress" role="status"><span className="spinner" aria-hidden="true" />The fix is on. The browser check rescans the site within about 30 minutes (requested {new Date(a11y.requestedAt!).toLocaleTimeString()}); the issue closes if the problem is gone.</span>;
+                    if (a11y?.phase === "remaining") return <span className="fix-progress" role="status">The fix is on and the site was re-checked. What is still listed could not be named automatically and needs a change in the theme or page builder.</span>;
+                    if (a11y?.phase === "unchecked") return <span className="fix-progress" role="status">The fix is on, but the site has not been re-checked since. Re-check to confirm.</span>;
                     const progress = fixProgress(issue);
                     return progress ? <span className="fix-progress" role="status">{progress.active && <span className="spinner" aria-hidden="true" />}{progress.text}</span> : null;
                   })()}
@@ -875,9 +882,11 @@ export default function Home() {
     if (/^wp:(?:plugin|theme)-update:/.test(issue.fingerprint) && uploadTargetFor(issue)) return { label: "Upload new version", confirm: null, action: "upload" as const };
     if (issue.fingerprint.startsWith("perf:")) return { label: "See speed fixes", confirm: null, action: "performance" as const };
     // Accessibility findings the plugin can fix on every page as it is sent (0.9.0+).
-    const a11yMeasure = /^browser:accessibility-meta-viewport:/.test(issue.fingerprint) ? "a11y_zoom"
-      : /^browser:accessibility-(?:link-name|button-name|frame-title):/.test(issue.fingerprint) ? "a11y_names"
-      : /^browser:(?:accessibility-(?:label|select-name):|missing-form-label:)/.test(issue.fingerprint) ? "a11y_form_labels" : null;
+    const a11y = a11yFixState(issue);
+    const a11yMeasure = a11y?.measure ?? null;
+    if (a11y?.phase === "waiting") return { label: "Fix is on · re-checking", confirm: null, action: "a11y-waiting" as const };
+    if (a11y?.phase === "remaining") return { label: "How to fix the rest", confirm: null, action: "accessibility" as const };
+    if (a11y?.phase === "unchecked") return { label: "Fix is on · re-check now", confirm: null, action: "recheck" as const };
     if (a11yMeasure) return {
       label: a11yMeasure === "a11y_zoom" ? "Fix: allow zooming" : a11yMeasure === "a11y_names" ? (issue.fingerprint.includes("frame-title") ? "Fix: name maps and videos" : "Fix: name icon links") : "Fix: label form fields",
       confirm: a11yMeasure === "a11y_zoom"
@@ -892,6 +901,27 @@ export default function Home() {
     if (issue.fingerprint.startsWith("renewal:")) return { label: "Open renewals", confirm: null, action: "renewals" as const };
     if (/^(?:wp:)?(?:security|integrity):/.test(issue.fingerprint)) return { label: "Fix: open cleanup", confirm: null };
     return null;
+  }
+
+  /**
+   * Where an accessibility finding stands. The plugin's fix applies to the whole site as pages are
+   * sent, and only a browser re-check can confirm it, so an open finding whose fix is already on is
+   * either waiting for that re-check, was re-checked and still has elements the fix cannot name
+   * ("remaining": those need a manual fix), or has not been re-checked since the fix ("unchecked").
+   */
+  function a11yFixState(issue: Issue) {
+    const measure = /^browser:accessibility-meta-viewport:/.test(issue.fingerprint) ? "a11y_zoom"
+      : /^browser:accessibility-(?:link-name|button-name|frame-title):/.test(issue.fingerprint) ? "a11y_names"
+      : /^browser:(?:accessibility-(?:label|select-name):|missing-form-label:)/.test(issue.fingerprint) ? "a11y_form_labels" : null;
+    if (!measure) return null;
+    const site = websites.find((item) => item.id === issue.website.id);
+    const on = Boolean(site?.wordpressAgent?.diagnostics?.performance?.measures?.some((item) => item.id === measure && item.enabled));
+    if (!on || issue.status === "resolved") return { measure, phase: null };
+    const recheck = site?.browserRecheck ?? null;
+    const requested = recheck ? Date.parse(recheck.requestedAt) : NaN;
+    if (recheck && !recheck.answeredAt && Date.now() - requested < 24 * 60 * 60_000) return { measure, phase: "waiting" as const, requestedAt: recheck.requestedAt };
+    if (recheck?.answeredAt && Date.parse(issue.lastSeenAt) > requested) return { measure, phase: "remaining" as const };
+    return { measure, phase: "unchecked" as const };
   }
 
   /**
@@ -944,11 +974,30 @@ export default function Home() {
     if ("action" in fix && fix.action === "upload") { const target = uploadTargetFor(issue); if (target) setUploadTarget(target); return; }
     if ("action" in fix && fix.action === "performance") { openWebsiteDetail(issue.website.id, "performance"); return; }
     if ("action" in fix && fix.action === "accessibility") { openWebsiteDetail(issue.website.id, "accessibility"); return; }
+    if ("action" in fix && fix.action === "a11y-waiting") return;
+    if ("action" in fix && fix.action === "recheck") {
+      setBusy(`fix:${issue.id}`);
+      try {
+        const response = await fetch(`/api/sites/${issue.website.id}/browser-recheck`, { method: "POST" });
+        const result = await response.json().catch(() => ({}));
+        setMessage(response.ok ? "Re-check requested. The browser check rescans the site within about 30 minutes; the issue closes if the problem is gone." : result.error ?? "The re-check could not be requested.");
+        await refresh();
+      } finally {
+        setBusy(null);
+      }
+      return;
+    }
     if ("action" in fix && fix.action === "a11y" && "measure" in fix) {
       if (!await dialogs.confirm({ title: fix.label.replace(/^Fix: /, "").replace(/^./, (letter) => letter.toUpperCase()) + "?", body: fix.confirm ?? "", confirmLabel: "Turn on" })) return;
-      const response = await fetch(`/api/sites/${issue.website.id}/performance`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "fix", changes: [{ measure: fix.measure, state: "on" }] }) });
-      const result = await response.json().catch(() => ({}));
-      setMessage(response.ok ? "Approved and sent to the site. It usually runs within a few seconds; the next daily browser check confirms the finding is gone." : result.error ?? "The fix could not be started.");
+      setBusy(`fix:${issue.id}`);
+      try {
+        const response = await fetch(`/api/sites/${issue.website.id}/performance`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "fix", changes: [{ measure: fix.measure, state: "on" }] }) });
+        const result = await response.json().catch(() => ({}));
+        setMessage(response.ok ? "Approved and sent to the site. Once it is on, the browser check rescans the site within about 30 minutes and the issue closes if the problem is gone." : result.error ?? "The fix could not be started.");
+        await refresh();
+      } finally {
+        setBusy(null);
+      }
       return;
     }
     if ("action" in fix && fix.action === "renewals") { openWebsiteDetail(issue.website.id, "renewals"); return; }

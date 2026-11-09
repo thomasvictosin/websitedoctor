@@ -162,6 +162,18 @@ export const agentDiagnosticSchema = z.object({
     detail: z.string().max(300),
     changedAt: z.string().nullable(),
   })).max(20).optional(),
+  // Speed and accessibility measures switched on through the plugin (0.8.0+). A malformed block is
+  // dropped instead of rejecting the whole sync.
+  performance: z.object({
+    measures: z.array(z.object({
+      id: z.string().max(60),
+      enabled: z.boolean(),
+      verified: z.boolean().nullable(),
+      detail: z.string().max(300),
+    })).max(40),
+    server: z.string().max(80),
+    cachePlugins: z.array(z.string().max(100)).max(20),
+  }).optional().catch(undefined),
   settings: z.object({
     blogname: z.string().max(500),
     blogdescription: z.string().max(2000),
