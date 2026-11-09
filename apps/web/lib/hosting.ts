@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { isIP } from "node:net";
 import { posix } from "node:path";
+import { CPANEL_PORTS, CpanelError, discoverCpanelSite, type CpanelTransport } from "./hosting-php.ts";
 import { testPinnedSftpConnection } from "./hosting-sftp.ts";
 import { isPublicAddress } from "./monitor.ts";
 
@@ -422,6 +423,9 @@ export async function discoverHostingCapabilities(input: {
   hostKeyFingerprint?: string;
   documentRoot?: string | null;
   provider?: string;
+  /** The registered website, used to find its domain on a cPanel account. */
+  siteUrl?: string;
+  cpanelTransport?: CpanelTransport;
 }): Promise<{
   ok: boolean;
   status: "success" | "error";
@@ -499,12 +503,39 @@ export async function discoverHostingCapabilities(input: {
   }
 
   if (method === "cpanel_uapi") {
-    return {
-      ok: false,
-      status: "error",
-      message: "The cPanel UAPI adapter is not implemented yet; no network request was made.",
-      capabilities: getRepresentativeCapabilities(method).map((capability) => ({ ...capability, supported: false })),
-    };
+    const unsupported = getRepresentativeCapabilities(method).map((capability) => ({ ...capability, supported: false }));
+    if (!(CPANEL_PORTS as readonly number[]).includes(port)) {
+      return { ok: false, status: "error", message: "cPanel connections use port 2083, or 443 for a cpanel.<domain> proxy.", capabilities: unsupported };
+    }
+    if (!input.siteUrl) {
+      return { ok: false, status: "error", message: "The website URL is required to find the site on the cPanel account.", capabilities: unsupported };
+    }
+    try {
+      const found = await discoverCpanelSite({ hostname, port, username: input.username?.trim() ?? "", token: input.secret?.trim() ?? "" }, input.siteUrl, input.cpanelTransport);
+      const verified = new Set(["cpanel_api_connection", "domain_discovery", "php_settings"]);
+      return {
+        ok: true,
+        status: "success",
+        message: `Connected to cPanel. ${found.vhost.vhost} runs PHP ${found.vhost.label ?? found.vhost.id}; ${found.installed.length} PHP version(s) are installed.`,
+        capabilities: getRepresentativeCapabilities(method).map((capability) => ({
+          ...capability,
+          supported: verified.has(capability.capability),
+          details: verified.has(capability.capability) ? "Verified through cPanel UAPI (LangPHP)." : "Not used by this adapter.",
+        })),
+        metadata: {
+          port,
+          documentRoot: found.vhost.documentRoot,
+          cpanel: { vhost: found.vhost.vhost, documentRoot: found.vhost.documentRoot, phpVersion: found.vhost.label, installed: found.installed.map((option) => option.label) },
+        },
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        status: "error",
+        message: error instanceof CpanelError ? error.message : `cPanel connection failed: ${error instanceof Error ? error.message : "unknown error"}`,
+        capabilities: unsupported,
+      };
+    }
   }
 
   if (method === "plesk_api" || method === "provider_api" || method === "server_agent") {
@@ -525,16 +556,6 @@ export async function discoverHostingCapabilities(input: {
   };
 }
 
-export async function testHostingConnection(input: {
-  method: string;
-  hostname: string;
-  username?: string | null;
-  port?: number | null;
-  authMethod?: string;
-  secret?: string;
-  hostKeyFingerprint?: string;
-  documentRoot?: string | null;
-  provider?: string;
-}) {
+export async function testHostingConnection(input: Parameters<typeof discoverHostingCapabilities>[0]) {
   return discoverHostingCapabilities(input);
 }

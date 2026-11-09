@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { browserRechecks } from "@/lib/browser-recheck";
 import { db } from "@/lib/db";
 import { authorizeOwnerRequest } from "@/lib/auth-api";
 import { getDefaultOrganizationId, ownedWebsiteWhere } from "@/lib/ownership";
@@ -44,7 +45,9 @@ export async function GET() {
       },
     },
   });
-  return NextResponse.json(redactApiValue(websites), { headers: { "cache-control": "no-store" } });
+  const rechecks = await browserRechecks(websites.map((website) => website.id));
+  const withRechecks = websites.map((website) => ({ ...website, browserRecheck: rechecks.get(website.id) ?? null }));
+  return NextResponse.json(redactApiValue(withRechecks), { headers: { "cache-control": "no-store" } });
 }
 
 export async function POST(request: Request) {

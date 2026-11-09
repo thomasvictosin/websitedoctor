@@ -14,7 +14,7 @@ function register_deactivation_hook(...$arguments): void {}
 function sanitize_text_field(string $value): string { return trim(strip_tags($value)); }
 function sanitize_textarea_field(string $value): string { return trim(strip_tags($value)); }
 function sanitize_key(string $value): string { return strtolower(preg_replace('/[^a-z0-9_-]/', '', $value)); }
-function wp_json_encode($value, int $flags = 0): string|false { return json_encode($value, $flags); }
+function wp_json_encode($value, int $flags = 0) { return json_encode($value, $flags); }
 function get_option(string $name, $default = false) { return $GLOBALS['awd_fixture_options'][$name] ?? $default; }
 function update_option(string $name, $value, $autoload = null): bool { $GLOBALS['awd_fixture_options'][$name] = $value; return true; }
 function wp_generate_uuid4(): string { static $counter = 0; return 'fixture-recovery-point-' . ++$counter; }
@@ -23,7 +23,14 @@ function wp_get_custom_css(string $stylesheet = ''): string { return $GLOBALS['a
 function wp_update_custom_css_post(string $css, array $args = array()): object { $GLOBALS['awd_fixture_custom_css'] = $css; return (object) array('post_name' => $args['stylesheet'] ?? 'fixture-theme'); }
 class WP_Error
 {
-    public function __construct(public string $code = '', public string $message = '') {}
+    public $code;
+    public $message;
+
+    public function __construct(string $code = '', string $message = '')
+    {
+        $this->code = $code;
+        $this->message = $message;
+    }
 }
 function is_wp_error($value): bool { return $value instanceof WP_Error; }
 function get_plugins(): array { return $GLOBALS['awd_fixture_plugins']; }
@@ -36,7 +43,7 @@ function wp_get_theme() { return new class {
 }; }
 function _get_cron_array(): array { return array($GLOBALS['awd_fixture_cron_time'] => array('fixture_failed_task' => array(array('schedule' => 'hourly', 'args' => array())))); }
 function esc_url_raw(string $url, array $protocols = array()): string { return $url; }
-function wp_parse_url(string $url): array|false { return parse_url($url); }
+function wp_parse_url(string $url) { return parse_url($url); }
 function untrailingslashit(string $url): string { return rtrim($url, '/'); }
 function wp_generate_password(int $length = 12, bool $special = true, bool $extra = false): string { return substr(bin2hex(random_bytes(32)), 0, $length); }
 function wp_upload_dir($time = null, bool $create = true): array { return $GLOBALS['awd_fixture_uploads'] ?? array(); }
@@ -542,5 +549,48 @@ foreach (array(
 }
 if (awd_a11y_filter_html('{"json":true}', $all) !== '{"json":true}') throw new RuntimeException('Non-HTML responses must pass through unchanged.');
 if (awd_a11y_filter_html($page, array()) !== $page) throw new RuntimeException('With every fix off the page must be unchanged.');
+
+// "Requires PHP" headers are reported only when they are plain versions (0.9.2).
+awd_test_assert(awd_requires_php_header('7.4') === '7.4' && awd_requires_php_header(' 8.1.2 ') === '8.1.2', 'plain Requires PHP versions must be reported');
+awd_test_assert(awd_requires_php_header('') === null && awd_requires_php_header('7.4+') === null && awd_requires_php_header('>=8') === null && awd_requires_php_header(null) === null, 'odd Requires PHP headers must be dropped, not sent');
+$fixture_report = awd_collect_diagnostics(array());
+awd_test_assert(isset($fixture_report['plugins']) && is_array($fixture_report['plugins']), 'diagnostics must still list plugins');
+
+// Moving code into place clears PHP's opcode cache for it (0.9.3). Without that, the request right after
+// a plugin upgrade ran cached old files next to new ones ("Class ... not found") and the health check
+// rolled back a good package. Run in a child PHP with the cache on and a long recheck interval, like a host.
+$opcache_dir = sys_get_temp_dir() . '/awd-opcache-' . bin2hex(random_bytes(4));
+mkdir($opcache_dir, 0700, true);
+$opcache_probe = $opcache_dir . '/probe.php';
+file_put_contents($opcache_probe, '<?php
+define("ABSPATH", __DIR__ . "/");
+function add_action() {}
+require ' . var_export(dirname(__DIR__) . '/includes/cleanup.php', true) . ';
+if (!function_exists("opcache_get_status") || !is_array(@opcache_get_status(false))) { echo "skip"; exit; }
+$root = __DIR__;
+$plugin = function ($dir, $version) { @mkdir($dir); file_put_contents($dir . "/main.php", "<?php return " . var_export($version, true) . ";"); touch($dir . "/main.php", time() - 3600 * ($version === "old" ? 2 : 1)); };
+$swap = function ($use_helper) use ($root, $plugin) {
+    $live = $root . "/live-" . ($use_helper ? "helper" : "rename");
+    $plugin($live, "old");
+    $before = include $live . "/main.php";
+    $plugin($root . "/new", "new");
+    if ($use_helper) { awd_cleanup_move($live, $live . ".previous"); awd_cleanup_move($root . "/new", $live); }
+    else { rename($live, $live . ".previous"); rename($root . "/new", $live); }
+    clearstatcache();
+    return $before . ">" . (include $live . "/main.php");
+};
+echo $swap(false), " ", $swap(true);
+');
+$opcache_output = trim((string) shell_exec(escapeshellarg(PHP_BINARY) . ' -d opcache.enable=1 -d opcache.enable_cli=1 -d opcache.validate_timestamps=1 -d opcache.revalidate_freq=600 ' . escapeshellarg($opcache_probe) . ' 2>&1'));
+if ($opcache_output === 'skip') {
+    echo "Opcode cache unavailable in this PHP; skipped the opcache move test.\n";
+} else {
+    // The plain rename must show the stale result, or this test proves nothing about the helper.
+    awd_test_assert($opcache_output === 'old>old old>new', 'moving code into place must clear the opcode cache (got "' . $opcache_output . '")');
+}
+foreach (array('live-rename.previous', 'live-rename', 'live-helper.previous', 'live-helper') as $opcache_sub) {
+    @unlink($opcache_dir . '/' . $opcache_sub . '/main.php'); @rmdir($opcache_dir . '/' . $opcache_sub);
+}
+@unlink($opcache_probe); @rmdir($opcache_dir);
 
 echo "WordPress plugin tests passed.\n";

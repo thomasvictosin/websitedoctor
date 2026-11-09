@@ -36,6 +36,10 @@ jobs:
         with:
           php-version: "8.2"
       - run: npm ci
+      # Type checking needs the generated Prisma client. Generating never connects, but the Prisma config requires a URL.
+      - run: npm run db:generate
+        env:
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
       - run: npm run typecheck
       - run: npm run test:web
       - run: npm run plugin:lint && npm run plugin:test

@@ -58,6 +58,9 @@ export const integrityReportSchema = z.object({
 
 export type IntegrityReport = z.infer<typeof integrityReportSchema>;
 
+// Plugin 0.9.2+: a plugin/theme "Requires PHP" header. An unexpected value is dropped, never a reason to reject the sync.
+const requiresPhpSchema = z.string().regex(/^\d{1,2}(\.\d{1,2}){0,2}$/).optional().catch(undefined);
+
 export const agentDiagnosticSchema = z.object({
   collectedAt: z.string().datetime({ offset: true }),
   site: z.object({
@@ -81,6 +84,7 @@ export const agentDiagnosticSchema = z.object({
     updateAvailable: z.boolean(),
     source: z.enum(["wordpress.org", "other"]).optional(),
     newVersion: z.string().regex(/^[0-9A-Za-z.+-]{1,40}$/).optional(),
+    requiresPhp: requiresPhpSchema,
   })).max(500),
   themes: z.array(z.object({
     stylesheet: z.string().max(100),
@@ -92,6 +96,7 @@ export const agentDiagnosticSchema = z.object({
     updateAvailable: z.boolean(),
     source: z.enum(["wordpress.org", "other"]),
     newVersion: z.string().regex(/^[0-9A-Za-z.+-]{1,40}$/).optional(),
+    requiresPhp: requiresPhpSchema,
   })).max(50).optional(),
   editablePages: z.array(z.object({
     id: z.number().int().positive(),
@@ -157,6 +162,18 @@ export const agentDiagnosticSchema = z.object({
     detail: z.string().max(300),
     changedAt: z.string().nullable(),
   })).max(20).optional(),
+  // Speed and accessibility measures switched on through the plugin (0.8.0+). A malformed block is
+  // dropped instead of rejecting the whole sync.
+  performance: z.object({
+    measures: z.array(z.object({
+      id: z.string().max(60),
+      enabled: z.boolean(),
+      verified: z.boolean().nullable(),
+      detail: z.string().max(300),
+    })).max(40),
+    server: z.string().max(80),
+    cachePlugins: z.array(z.string().max(100)).max(20),
+  }).optional().catch(undefined),
   settings: z.object({
     blogname: z.string().max(500),
     blogdescription: z.string().max(2000),

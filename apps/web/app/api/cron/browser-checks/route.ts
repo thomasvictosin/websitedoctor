@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { answerBrowserRecheck, pendingBrowserRechecks } from "@/lib/browser-recheck";
 import { db } from "@/lib/db";
 import { runAndStoreCheck } from "@/lib/monitoring-service";
 import { readBoundedJson } from "@/lib/request-json";
@@ -34,6 +35,11 @@ export async function GET(request: Request) {
   const denied = deny(request);
   if (denied) return denied;
   const sites = await db.website.findMany({ where: { monitoringEnabled: true }, orderBy: { createdAt: "asc" }, select: { id: true, name: true, url: true } });
+  // ?pending=1: only sites waiting for a re-check after a fix (the frequent runner wake-up).
+  if (new URL(request.url).searchParams.get("pending") === "1") {
+    const pending = await pendingBrowserRechecks(sites.map((site) => site.id));
+    return NextResponse.json({ sites: sites.filter((site) => pending.has(site.id)) }, { headers: { "cache-control": "no-store" } });
+  }
   return NextResponse.json({ sites }, { headers: { "cache-control": "no-store" } });
 }
 
@@ -69,5 +75,7 @@ export async function POST(request: Request) {
   const result = parsed.data.result;
   // The availability and outside security checks run here as usual; only the browser part comes from the runner.
   const stored = await runAndStoreCheck(website, "scheduled_browser", { scanBrowserSite: async () => result as never });
+  const scanStartedAt = new Date(result.checkedAt);
+  if (Number.isFinite(scanStartedAt.getTime())) await answerBrowserRecheck(website.id, scanStartedAt);
   return NextResponse.json({ siteId: website.id, scanSessionId: stored.scanSessionId, findings: result.findings.length });
 }

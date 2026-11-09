@@ -2,7 +2,7 @@
 
 ## Current boundary
 
-Hosting repair proposals are review records only. The current SFTP adapter performs inspection and no remote writes are implemented. This is the current capability boundary, not a permanent product rule that SFTP must always be read-only. When a technically safe writer is available, the product should let the user choose whether to write/overwrite and require a clear warning plus explicit confirmation. No route, task, approval grant, or WordPress agent may execute a hosting proposal today.
+Hosting repair proposals are review records only. The current SFTP adapter performs inspection and no remote writes are implemented. This is the current capability boundary, not a permanent product rule that SFTP must always be read-only. When a technically safe writer is available, the product should let the user choose whether to write/overwrite and require a clear warning plus explicit confirmation. No route, task, approval grant, or WordPress agent may execute a hosting proposal today. The one hosting write that exists, the cPanel PHP version switch below, is a separate owner action and never runs from a proposal.
 
 SFTP host-key pinning and DNS validation authenticate the connection endpoint; configured-root checks and symlink checks constrain the requested path at the time of inspection. They do not bind later file operations to the same filesystem objects. A remote user or process can replace a checked path component between `lstat` and a subsequent SFTP write. SFTP does not provide the descriptor-relative, no-follow path traversal required to close that race, so adding another pre-write check would not make writes safe.
 
@@ -43,6 +43,22 @@ Invariants:
 - **No automatic rollback after a failed verification.** Rolling back a partial cleanup would reinstall malware, so changes are kept and the remaining findings are reported. Restore is an explicit administrator action in the plugin.
 
 Accepted residual risk: the plugin's check-then-rename is not compare-and-swap (see the feasibility spike below), and code running on a compromised site can interfere with the plugin itself. Both are accepted for this playbook because the competing writer is the malware being removed, every change has a stored undo copy, and success is judged from outside the site. A write that is immediately overwritten again is reported as a failure ("something on the server is rewriting it").
+
+## cPanel PHP version switch (approved 9 November 2026)
+
+The site owner decided the app may change a site's PHP version through the owner's cPanel account. It is a configuration switch, not a file write: cPanel's own MultiPHP Manager API (UAPI `LangPHP::php_set_vhost_versions`) changes one virtual host, so the SFTP path race above does not apply.
+
+- **Scope.** One virtual host: the cPanel domain that serves the registered website (matched by hostname, `www.` as an alias, recorded when the connection is tested). Only versions cPanel lists as installed (`ea-phpXY`). Nothing else on the account is read or changed.
+- **Endpoint.** HTTPS to the hostname the owner entered, on 2083 or 443 only, with normal certificate validation (no "insecure" option), DNS resolved once and pinned to public addresses. The API token is stored with the other hosting secrets (AES-256-GCM) and never returned or accepted through MCP.
+- **Consent.** Each switch needs an explicit confirmation in the dashboard (or `confirm: true` from an MCP client after asking the user). The request carries the version the owner reviewed; if cPanel reports a different current version, nothing is changed.
+- **Blocked before switching:** a version that is not installed; below 7.2 (the AI Website Doctor plugin's minimum, so the change could not be confirmed); a WordPress core release older than the first one that supports the target PHP; an active plugin, active theme or its parent whose "Requires PHP" is higher than the target (plugin 0.9.2+ reports it). Warnings (outdated plugins, premium plugins that cannot be checked, a major-version jump, a stale or missing plugin report) are shown in the confirmation.
+- **Undo data.** The previous version id, read immediately before the switch. If the site followed the server default, switching back sets that version explicitly (cPanel's "inherit" is not used), which the result says.
+- **Verification.** Before switching, the home page (with a cache-busting query), `wp-login.php`, `/wp-json/` and `admin-ajax.php` are fetched from outside. After switching, cPanel must report the new version and the same pages are fetched again up to four times over about 20 seconds. The home page must answer below 500 without a new PHP error marker and not blank; every other page that answered below 500 before must still do so. If the home page cannot be fetched at all beforehand (for example an edge challenge), nothing is changed because a broken switch could not be detected.
+- **Automatic switch-back** on any failed verification, followed by the same outside check. If switching back fails, the result is `rollback_failed` and tells the owner to set the previous version in MultiPHP Manager.
+- **Confirmation from inside.** After a verified switch the plugin's next sync must report the new PHP version. A mismatch is reported (hosts can override MultiPHP with CloudLinux's PHP Selector or an `.htaccess` handler) but is not undone automatically, because the site was verified working.
+- **Audit.** A start and a finish event (with every step) in the audit log; the last result is kept on the connection. One switch per connection at a time.
+
+Accepted residual risk: the outside check covers four URLs. A plugin that fails only on other pages (checkout, a form handler, a cron job) can pass verification; the confirmation and the issue guidance tell the owner to test critical flows, and switching back is one action.
 
 ## Eligible future adapter
 

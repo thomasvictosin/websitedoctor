@@ -220,9 +220,38 @@ function awd_cleanup_atomic_write(string $path, string $content, ?int $perms = n
 /** Move a file or directory (rename, falling back to copy + delete for files). */
 function awd_cleanup_move(string $from, string $to): bool
 {
-    if (@rename($from, $to)) return true;
-    if (is_file($from) && @copy($from, $to) && hash_file('sha256', $from) === hash_file('sha256', $to)) return @unlink($from);
+    awd_opcache_forget($from);
+    if (@rename($from, $to)) { awd_opcache_forget($to); return true; }
+    if (is_file($from) && @copy($from, $to) && hash_file('sha256', $from) === hash_file('sha256', $to) && @unlink($from)) { awd_opcache_forget($to); return true; }
     return false;
+}
+
+/**
+ * PHP's opcode cache keeps compiled code by file path and, depending on the host, rechecks a file
+ * only every few seconds (or never). Right after code is moved into or out of place, the next
+ * request would otherwise run cached files of the old version next to new files on disk: a plugin
+ * upgrade then dies with "Class ... not found" although both versions are fine, and the health
+ * check rolls back a good package. WordPress's own upgrader clears these entries the same way
+ * (wp_opcache_invalidate_directory).
+ */
+function awd_opcache_forget(string $path): void
+{
+    if (!function_exists('opcache_invalidate') || is_link($path)) return;
+    $pending = array($path);
+    $seen = 0;
+    while ($pending && $seen < 50000) {
+        $current = array_pop($pending);
+        if (is_file($current)) {
+            $seen++;
+            if (preg_match('/\.(php|phtml|inc)$/i', $current)) @opcache_invalidate($current, true);
+            continue;
+        }
+        if (!is_dir($current) || is_link($current)) continue;
+        foreach ((array) @scandir($current) as $entry) {
+            if ($entry === '.' || $entry === '..' || !is_string($entry)) continue;
+            $pending[] = $current . '/' . $entry;
+        }
+    }
 }
 
 function awd_cleanup_remove_tree(string $path): void

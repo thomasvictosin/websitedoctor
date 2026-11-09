@@ -577,7 +577,7 @@ h2 { color: #203747; font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
 .confirm-dialog::backdrop { background: #10232f66; }
 .confirm-dialog form { display: grid; gap: 10px; padding: 20px 22px; }
 .confirm-dialog h2 { font-size: 15px; }
-.confirm-dialog p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.confirm-dialog p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; white-space: pre-line; }
 .confirm-input { display: grid; gap: 5px; color: #46546a; font-size: 11px; font-weight: 600; }
 .confirm-input input { min-height: 38px; padding: 0 11px; border: 1px solid #dde5e9; border-radius: 7px; font-size: 12px; font-weight: 400; }
 .confirm-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 6px; }

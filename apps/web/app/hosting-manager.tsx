@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import { PhpVersionPanel } from "./php-version-panel";
 
 type HostingCapability = {
   capability: string;
@@ -130,8 +131,8 @@ export function HostingManager({
           port: Number(port),
           username,
           authMethod,
-          documentRoot,
-          hostKeyFingerprint,
+          documentRoot: method === "cpanel_uapi" ? "" : documentRoot,
+          hostKeyFingerprint: method === "sftp" ? hostKeyFingerprint : "",
           secret,
           testConnection: testOnly,
         }),
@@ -206,7 +207,8 @@ export function HostingManager({
         <span className={connections.length ? "agent-connected" : "agent-disconnected"}>{connections.length ? `${connections.length} configured` : "None"}</span>
       </div>
       <p>Connect through the protocol your hosting account supports. Hosting providers vary by client; enter a provider label and select an available connection method. Secrets are encrypted before they are stored.</p>
-      <p>This build can inspect files over SFTP. Remote file changes are not implemented yet. When available, writing or overwriting will be optional and require your confirmation after a warning that names the exact target and recovery plan.</p>
+      <p>With a cPanel account (API token), you can switch the site&apos;s PHP version from here: the app checks compatibility first, verifies the site from outside after switching, and switches back automatically if the site breaks.</p>
+      <p>Over SFTP this build can inspect files. Remote file changes are not implemented yet. When available, writing or overwriting will be optional and require your confirmation after a warning that names the exact target and recovery plan.</p>
       <p>Hosting-side PHP/server log reading is not implemented in this connection yet. WordPress PHP error evidence, when enabled in the paired plugin, comes from the site itself and is separate from hosting account logs.</p>
 
       {connections.length > 0 && (
@@ -258,7 +260,10 @@ export function HostingManager({
                     )}
                   </div>
                 )}
-                {connection.status === "connected" && (
+                {connection.status === "connected" && connection.connectionMethod === "cpanel_uapi" && (
+                  <PhpVersionPanel websiteId={websiteId} connectionId={connection.id} onNotice={onNotice} />
+                )}
+                {connection.status === "connected" && connection.connectionMethod === "sftp" && (
                   <div className="hosting-inspection">
                     <strong>Request hosting repair review</strong>
                     <p>This creates an issue-linked review record only. It does not create a backup or make remote changes, even if approved.</p>
@@ -319,10 +324,15 @@ export function HostingManager({
         </label>
         <label className="hosting-field">
           Connection method
-          <select value={method} onChange={(event) => setMethod(event.target.value)}>
+          <select value={method} onChange={(event) => {
+            const next = event.target.value;
+            setMethod(next);
+            if (next === "cpanel_uapi") { setPort(2083); setAuthMethod("token"); }
+            if (next === "sftp") { setPort(22); setAuthMethod("key"); }
+          }}>
             <option value="ssh" disabled>SSH (not available yet)</option>
             <option value="sftp">SFTP</option>
-            <option value="cpanel_uapi" disabled>cPanel-compatible UAPI (not available yet)</option>
+            <option value="cpanel_uapi">cPanel (API token)</option>
             <option value="plesk_api" disabled>Plesk-compatible API (not available yet)</option>
             <option value="provider_api" disabled>Hosting provider API (not available yet)</option>
             <option value="server_agent" disabled>Server agent (not available yet)</option>
@@ -349,10 +359,14 @@ export function HostingManager({
             <option value="none">None / not required</option>
           </select>
         </label>
-        <label className="hosting-field">
+        {method !== "cpanel_uapi" && <label className="hosting-field">
           Document root
           <input value={documentRoot} onChange={(event) => setDocumentRoot(event.target.value)} placeholder="/home/user/public_html" />
-        </label>
+        </label>}
+        {method === "cpanel_uapi" && <p className="hosting-field-help hosting-field-wide">
+          Hostname: your server&apos;s hostname from cPanel → Server Information (port 2083), or cpanel.yourdomain on port 443. Username: the cPanel account name.
+          Token: cPanel → Security → Manage API Tokens → Create. The site&apos;s domain and folder are found automatically; the host must have MultiPHP Manager enabled.
+        </p>}
         {method === "sftp" && <label className="hosting-field hosting-field-wide">
           SSH host-key fingerprint (SHA256)
           <input value={hostKeyFingerprint} onChange={(event) => setHostKeyFingerprint(event.target.value)} placeholder="SHA256:..." required />

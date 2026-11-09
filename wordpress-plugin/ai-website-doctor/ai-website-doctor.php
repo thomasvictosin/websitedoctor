@@ -2,9 +2,9 @@
 /**
  * Plugin Name: AI Website Doctor
  * Description: Connects this WordPress site to a locally hosted AI Website Doctor for diagnostics and explicitly approved repairs.
- * Version: 0.9.1
+ * Version: 0.9.3
  * Requires at least: 6.2
- * Requires PHP: 8.0
+ * Requires PHP: 7.2
  * License: GPL-2.0-or-later
  * Text Domain: ai-website-doctor
  */
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('AWD_VERSION', '0.9.1');
+define('AWD_VERSION', '0.9.3');
 define('AWD_OPTION', 'ai_website_doctor_settings');
 define('AWD_RECOVERY_OPTION', 'ai_website_doctor_recovery_points');
 define('AWD_SYNC_OPTION', 'ai_website_doctor_sync_state');
@@ -21,6 +21,28 @@ define('AWD_MAX_RECOVERY_POINTS', 25);
 define('AWD_FATAL_OPTION', 'ai_website_doctor_fatal_events');
 define('AWD_CRON_HISTORY_OPTION', 'ai_website_doctor_cron_history');
 define('AWD_CONFLICT_REPORT_OPTION', 'ai_website_doctor_staging_conflict_report');
+
+// WordPress 5.9+ already provides these on PHP 7; the fallbacks only matter outside a normal load (e.g. tests).
+if (!function_exists('str_contains')) {
+    function str_contains($haystack, $needle): bool
+    {
+        return '' === $needle || false !== strpos((string) $haystack, (string) $needle);
+    }
+}
+if (!function_exists('str_starts_with')) {
+    function str_starts_with($haystack, $needle): bool
+    {
+        return 0 === strncmp((string) $haystack, (string) $needle, strlen((string) $needle));
+    }
+}
+if (!function_exists('str_ends_with')) {
+    function str_ends_with($haystack, $needle): bool
+    {
+        $haystack = (string) $haystack;
+        $needle = (string) $needle;
+        return '' === $needle || ('' !== $haystack && 0 === substr_compare($haystack, $needle, -strlen($needle)));
+    }
+}
 
 require_once __DIR__ . '/includes/integrity.php';
 require_once __DIR__ . '/includes/cleanup.php';
@@ -323,7 +345,7 @@ function awd_conflict_testing_report(array $plugins, $theme): array
         'stagingRequired' => true,
         'liveDeactivationPerformed' => false,
         'testedAt' => null,
-        'activePlugins' => array_values(array_map(static fn($plugin) => (string) $plugin['file'], array_filter($plugins, static fn($plugin) => !empty($plugin['active'])))),
+        'activePlugins' => array_values(array_map(static function ($plugin) { return (string) $plugin['file']; }, array_filter($plugins, static function ($plugin) { return !empty($plugin['active']); }))),
         'activeTheme' => sanitize_key($theme->get_stylesheet()),
         'findings' => array(),
     );
@@ -342,13 +364,13 @@ function awd_record_staging_conflict_report(array $report): bool
         'stagingRequired' => true,
         'liveDeactivationPerformed' => false,
         'testedAt' => gmdate('c'),
-        'activePlugins' => array_slice(array_values(array_filter(array_map('sanitize_text_field', (array) ($report['activePlugins'] ?? array())), static fn($item) => $item !== '')), 0, 100),
+        'activePlugins' => array_slice(array_values(array_filter(array_map('sanitize_text_field', (array) ($report['activePlugins'] ?? array())), static function ($item) { return $item !== ''; })), 0, 100),
         'activeTheme' => substr(sanitize_key((string) ($report['activeTheme'] ?? '')), 0, 100),
         'findings' => array(),
     );
     foreach (array_slice((array) ($report['findings'] ?? array()), 0, 100) as $finding) {
         if (!is_array($finding)) continue;
-        $components = array_slice(array_values(array_filter(array_map('sanitize_text_field', (array) ($finding['components'] ?? array())), static fn($item) => $item !== '')), 0, 3);
+        $components = array_slice(array_values(array_filter(array_map('sanitize_text_field', (array) ($finding['components'] ?? array())), static function ($item) { return $item !== ''; })), 0, 3);
         $result = in_array($finding['result'] ?? '', array('conflict', 'no_conflict', 'inconclusive'), true) ? $finding['result'] : 'inconclusive';
         if (!$components) continue;
         $validated['findings'][] = array(
@@ -1010,6 +1032,13 @@ function awd_poll_central(): void
     }
 }
 
+/** A plugin/theme "Requires PHP" header, only when it is a plain version such as 7.4 (so odd headers never break a sync). */
+function awd_requires_php_header($value): ?string
+{
+    $value = trim((string) $value);
+    return preg_match('/^\d{1,2}(\.\d{1,2}){0,2}$/', $value) ? $value : null;
+}
+
 function awd_collect_diagnostics(array $settings): array
 {
     require_once ABSPATH . 'wp-admin/includes/plugin.php';
@@ -1037,6 +1066,8 @@ function awd_collect_diagnostics(array $settings): array
         if (is_object($update) && isset($update->new_version) && preg_match('/^[0-9A-Za-z.+-]{1,40}$/', (string) $update->new_version)) {
             $entry['newVersion'] = (string) $update->new_version;
         }
+        $requires_php = awd_requires_php_header($plugin['RequiresPHP'] ?? '');
+        if ($requires_php !== null) $entry['requiresPhp'] = $requires_php;
         $plugins[] = $entry;
     }
 
@@ -1245,7 +1276,7 @@ function awd_parse_php_log_errors(string $excerpt): array
         if (preg_match('/^(.*)\s+in\s+(.+?)\s+on line\s+(\d+)\s*$/i', $message, $location)) {
             $message = trim($location[1]);
             $file = basename(str_replace('\\', '/', $location[2]));
-            $line_number = min(2_147_483_647, (int) $location[3]);
+            $line_number = min(2147483647, (int) $location[3]);
         }
         $message = substr(awd_redact_error_text($message), 0, 500);
         $identity = $level . ':' . $message . ':' . $file . ':' . $line_number;

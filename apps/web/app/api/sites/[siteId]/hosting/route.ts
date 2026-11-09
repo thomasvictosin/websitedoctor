@@ -55,11 +55,12 @@ export async function POST(
   const { siteId } = await params;
   const website = await db.website.findFirst({
     where: ownedWebsiteWhere(authorization.ownerId, siteId),
-    select: { id: true, name: true, organizationId: true },
+    select: { id: true, name: true, url: true, organizationId: true },
   });
   if (!website) return NextResponse.json({ error: "Website not found." }, { status: 404 });
 
   const probe = await testHostingConnection({
+    siteUrl: website.url,
     method: parsed.data.method,
     hostname: parsed.data.hostname,
     port: parsed.data.port,
@@ -88,7 +89,7 @@ export async function POST(
     username: parsed.data.username,
     port: parsed.data.port,
     authMethod: parsed.data.authMethod,
-    documentRoot: parsed.data.documentRoot,
+    documentRoot: parsed.data.documentRoot || (typeof probe.metadata?.documentRoot === "string" ? probe.metadata.documentRoot : null),
     secret: parsed.data.secret,
   });
 
@@ -128,6 +129,7 @@ export async function POST(
           authMethod: connectionRecord.authMethod,
           documentRoot: connectionRecord.documentRoot,
           hostKeyFingerprint: probe.metadata?.hostKeyFingerprint ?? null,
+          ...(probe.metadata?.cpanel ? { cpanel: probe.metadata.cpanel } : {}),
           testMode: parsed.data.testConnection,
         },
         capabilities: {

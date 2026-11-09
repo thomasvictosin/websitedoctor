@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { db } from "./db.ts";
 import { REPEAT_WINDOW_MS, SALT_ROTATION_COOLDOWN_MS, allUpdateSteps, repeatKey, buildCleanupPlan, cleanupStepSchema, cleanupStepsDigest, compareVersions, fetchOfficialChecksums, fixPlanForIssue, pluginUpdateSteps, selectCleanupSteps, type CleanupPlan, type CleanupStep } from "./cleanup-plan.ts";
+import { requestBrowserRecheck } from "./browser-recheck.ts";
 import { checkWebsite } from "./monitor.ts";
 import { runAndStoreSecurityCheck } from "./monitoring-service.ts";
 import { notifySite } from "./protection.ts";
@@ -436,6 +437,11 @@ async function recordMaintenanceReport(
     const outcome = report.steps.find((item) => item.index === index);
     await db.softwarePackage.updateMany({ where: { id: step.parameters.packageId, status: "installing" }, data: { status: outcome?.status === "applied" && verificationStatus !== "failed" ? "installed" : "failed" } });
   }
+  // Accessibility fixes are confirmed only by a browser: ask the runner to rescan this site soon,
+  // also when the fix was already on (the finding may simply predate it).
+  const a11yOn = plannedSteps.some((step, index) => step.operation === "set_performance" && step.parameters.state === "on" && step.parameters.measure.startsWith("a11y_")
+    && ["applied", "skipped"].includes(report.steps.find((item) => item.index === index)?.status ?? ""));
+  if (a11yOn && verificationStatus !== "failed") await requestBrowserRecheck(agent.websiteId, "accessibility fix switched on");
   for (const step of report.steps.filter((item) => item.status === "applied" && (item.operation === "restore_run" || item.operation === "purge_quarantine"))) {
     const runId = (record(cleanup).steps as Array<{ operation: string; parameters: Record<string, string> }> | undefined)?.[step.index]?.parameters?.runId;
     if (!runId) continue;
