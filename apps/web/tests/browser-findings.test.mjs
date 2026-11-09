@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { groupSiteWideFindings, isLegacyPerPageFingerprint, siteWideBrowserKind } from "../lib/browser-findings.ts";
+import { groupSiteWideFindings, isLegacyPerPageFingerprint, siteWideBrowserKind, siteWideFindingCleared } from "../lib/browser-findings.ts";
 
 const at = (kind, pageKey, page, severity = "medium", title = "Links must have discernible text") => ({
   fingerprint: `browser:${kind}:${pageKey}`,
@@ -48,4 +48,19 @@ test("legacy per-page copies of grouped rules are recognised", () => {
   assert.equal(isLegacyPerPageFingerprint("browser:horizontal-overflow:8a5edab28263"), false);
   assert.equal(isLegacyPerPageFingerprint("browser:broken-link:0123456789abcdef:8a5edab28263"), false);
   assert.equal(isLegacyPerPageFingerprint("security:sitemap-spam"), false);
+});
+
+test("a site-wide finding clears when most of its pages were rescanned without it", () => {
+  const keys = Array.from({ length: 23 }, (_, index) => index.toString(16).padStart(12, "0"));
+  // One page that never completes in every viewport must not keep a fixed issue open.
+  assert.equal(siteWideFindingCleared(keys, new Set(keys.slice(1))), true);
+  assert.equal(siteWideFindingCleared(keys, new Set(keys.slice(0, 19))), true);
+  assert.equal(siteWideFindingCleared(keys, new Set(keys.slice(0, 18))), false);
+  // Small sets still need (almost) every page: 1 of 1, 4 of 5.
+  assert.equal(siteWideFindingCleared(keys.slice(0, 1), new Set()), false);
+  assert.equal(siteWideFindingCleared(keys.slice(0, 1), new Set(keys.slice(0, 1))), true);
+  assert.equal(siteWideFindingCleared(keys.slice(0, 5), new Set(keys.slice(0, 3))), false);
+  assert.equal(siteWideFindingCleared(keys.slice(0, 5), new Set(keys.slice(0, 4))), true);
+  assert.equal(siteWideFindingCleared(undefined, new Set(keys)), false);
+  assert.equal(siteWideFindingCleared([], new Set(keys)), false);
 });

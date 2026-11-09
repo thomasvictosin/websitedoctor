@@ -33,6 +33,22 @@ export function siteWideBrowserKind(fingerprint: string): string | null {
   return kind;
 }
 
+/**
+ * Whether a scan that did not observe a site-wide finding shows it is fixed. Requiring every page
+ * it was seen on to be rescanned kept fixed issues open forever when one page timed out in one
+ * viewport on every scan. Site-wide findings come from shared templates, so a clean rescan of most
+ * of those pages is the evidence; if a missed page still has it, the next scan reopens the issue.
+ */
+export const SITE_WIDE_RESOLVE_SHARE = 0.8;
+
+export function siteWideFindingCleared(pageKeys: unknown, scannedPageKeys: ReadonlySet<string>) {
+  if (!Array.isArray(pageKeys)) return false;
+  const keys = pageKeys.filter((key): key is string => typeof key === "string");
+  if (!keys.length) return false;
+  const rescanned = keys.filter((key) => scannedPageKeys.has(key)).length;
+  return rescanned >= Math.ceil(keys.length * SITE_WIDE_RESOLVE_SHARE);
+}
+
 /** True for a fingerprint written before grouping (one issue per page for a grouped rule). */
 export function isLegacyPerPageFingerprint(fingerprint: string) {
   return siteWideBrowserKind(fingerprint) !== null && !fingerprint.endsWith(`:${SITE_WIDE_SUFFIX}`);
