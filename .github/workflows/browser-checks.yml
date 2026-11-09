@@ -35,7 +35,8 @@ concurrency:
 jobs:
   browser-checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Each site gets up to 10 minutes of scanning; the 30 minutes this had cut a full run off after 3 of 9 sites.
+    timeout-minutes: 120
     env:
       MONITOR_URL: ${{ secrets.MONITOR_URL }}
       CRON_SECRET: ${{ secrets.CRON_SECRET }}

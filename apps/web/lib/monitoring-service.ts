@@ -1,7 +1,7 @@
 import { db } from "./db.ts";
 import type { Prisma } from "@prisma/client";
 import type { scanBrowserSite } from "./browser-monitor.ts";
-import { isLegacyPerPageFingerprint, SITE_WIDE_SUFFIX } from "./browser-findings.ts";
+import { isLegacyPerPageFingerprint, siteWideFindingCleared, SITE_WIDE_SUFFIX } from "./browser-findings.ts";
 import { checkWebsite } from "./monitor.ts";
 import { proposeStandingEligibleRepair } from "./repair-authorization.ts";
 import { runSecurityProbe, type SecurityProbeResult } from "./security-probe.ts";
@@ -247,11 +247,10 @@ export async function runAndStoreCheck(
           .filter((issue) => {
             if (observedFingerprints.has(issue.fingerprint)) return false;
             const pageKey = issue.fingerprint.split(":").at(-1);
-            // A site-wide issue is fixed once every page it was seen on was rescanned without it.
+            // A site-wide issue is fixed once most pages it was seen on were rescanned without it.
             if (pageKey === SITE_WIDE_SUFFIX) {
               const evidence = issue.evidence as { browser?: { finding?: { pageKeys?: unknown } } } | null;
-              const keys = evidence?.browser?.finding?.pageKeys;
-              return Array.isArray(keys) && keys.length > 0 && keys.every((key) => typeof key === "string" && scannedPageKeys.has(key));
+              return siteWideFindingCleared(evidence?.browser?.finding?.pageKeys, scannedPageKeys);
             }
             return Boolean(pageKey) && scannedPageKeys.has(pageKey!);
           })
