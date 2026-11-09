@@ -30,7 +30,8 @@ npm-debug.log*
 *.sql
 *.dump
 *.backup
-backups/
+# Database dumps at the repository root only; app routes named backups/ must stay tracked.
+/backups/
 wordpress-plugin/ai-website-doctor/vendor/
 wordpress-plugin/ai-website-doctor/.phpunit.cache/
 wordpress-plugin/ai-website-doctor/dist/
